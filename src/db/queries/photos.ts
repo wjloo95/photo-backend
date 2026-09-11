@@ -90,6 +90,17 @@ export async function getPhotosForAlbum(
   return result.rows.map(toPhoto);
 }
 
+export async function getAllPhotosForAlbum(albumId: string): Promise<Photo[]> {
+  const result = await pool.query<PhotoRow>(
+    `SELECT p.*
+     FROM photos p
+     JOIN photo_albums pa ON pa.photo_id = p.id
+     WHERE pa.album_id = $1`,
+    [albumId],
+  );
+  return result.rows.map(toPhoto);
+}
+
 export interface PhotoAlbumOwnership {
   photographerId: string;
   clientId: string | null;
@@ -137,10 +148,10 @@ export async function removePhotoFromAlbum(albumId: string, photoId: string): Pr
 }
 
 export async function deletePhotosFromAlbum(albumId: string, photoIds: string[]): Promise<void> {
-  await pool.query(
-    'DELETE FROM photo_albums WHERE album_id = $1 AND photo_id = ANY($2::uuid[])',
-    [albumId, photoIds],
-  );
+  await pool.query('DELETE FROM photo_albums WHERE album_id = $1 AND photo_id = ANY($2::uuid[])', [
+    albumId,
+    photoIds,
+  ]);
 }
 
 // Permanently removes the photo from the system. photo_albums.photo_id and
@@ -149,4 +160,15 @@ export async function deletePhotosFromAlbum(albumId: string, photoIds: string[])
 // and any thumbnail reference is cleaned up automatically.
 export async function deletePhotoById(id: string): Promise<void> {
   await pool.query('DELETE FROM photos WHERE id = $1', [id]);
+}
+
+export async function markPhotoReady(
+  photoId: string,
+  { basePath, width, height }: Pick<Photo, 'basePath' | 'width' | 'height'>,
+): Promise<void> {
+  await pool.query(
+    `UPDATE photos SET base_path = $2, width = $3, height = $4,
+    status = 'ready' WHERE id = $1`,
+    [photoId, basePath, width, height],
+  );
 }

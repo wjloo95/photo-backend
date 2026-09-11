@@ -9,6 +9,7 @@
  */
 
 import { Queue } from 'bullmq';
+export const EXPIRY_QUEUE_NAME = 'expiry';
 
 // Same pattern as photoQueue — pass host/port rather than an ioredis instance
 // to avoid the BullMQ/ioredis dual-package type clash.
@@ -20,9 +21,9 @@ const connection = {
 
 // Job name constants for each step of the expiry pipeline.
 export enum ExpiryJobName {
-  Warn90Days  = 'warn-90-days',
-  Warn30Days  = 'warn-30-days',
-  Warn7Days   = 'warn-7-days',
+  Warn90Days = 'warn-90-days',
+  Warn30Days = 'warn-30-days',
+  Warn7Days = 'warn-7-days',
   DeleteExpired = 'delete-expired',
 }
 
@@ -30,18 +31,15 @@ export enum ExpiryJobName {
 // for albums matching each warning window.
 export type ExpiryJobData = Record<string, never>;
 
-export const expiryQueue = new Queue<ExpiryJobData>(
-  'expiry',
-  {
-    connection,
-    defaultJobOptions: {
-      attempts: 3,
-      backoff: {
-        type: 'exponential',
-        delay: 5_000,
-      },
-      removeOnComplete: { age: 86_400 },
-      removeOnFail: { count: 100 },
+export const expiryQueue = new Queue<ExpiryJobData>(EXPIRY_QUEUE_NAME, {
+  connection,
+  defaultJobOptions: {
+    attempts: 3,
+    backoff: {
+      type: 'exponential',
+      delay: 5_000,
     },
-  }
-);
+    removeOnComplete: { age: 86_400 },
+    removeOnFail: { count: 100 },
+  },
+});

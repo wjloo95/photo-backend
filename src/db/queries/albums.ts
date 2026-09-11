@@ -90,3 +90,44 @@ export async function updateAlbumById(
 export async function deleteAlbumById(id: string): Promise<void> {
   await pool.query('DELETE FROM albums WHERE id = $1', [id]);
 }
+//     getAlbumsNeedingWarning(days: number): Promise<Album[]> — albums
+//       where access_expires_at <= NOW() + INTERVAL 'N days' AND the
+//       relevant warned_*_at IS NULL. Three call sites (90/30/7), so decide
+//       whether that's one parameterised function or three thin ones —
+//       either way, the warned_*_at column being updated can't be a normal
+//       $1-style query parameter (those bind values, not column names), so
+//       whichever shape you pick still needs to pick the right column name
+//       in application code, not via a placeholder.
+//     markAlbumWarned(albumId, field): sets one warned_*_at = NOW()
+//     getExpiredAlbums(): Promise<Album[]> — access_expires_at < NOW()
+//   already available: getPhotosForAlbum (db/queries/photos.ts — paginated,
+//   built for the API route; you likely want every photo in the album here,
+//   not one page of it), deletePhotoById, deleteAlbumById,
+//   getAlbumOwnersForPhoto
+
+export async function getAlbumsNeedingWarning(days: 90 | 30 | 7): Promise<Album[]> {
+  const warnedColumn = days === 90 ? 'warned_90_at' : days === 30 ? 'warned_30_at' : 'warned_7_at';
+
+  const result = await pool.query<AlbumRow>(
+    `SELECT * FROM albums
+     WHERE access_expires_at <= NOW() + make_interval(days => $1)
+     AND ${warnedColumn} IS NULL`,
+    [days],
+  );
+  return result.rows.map(toAlbum);
+}
+
+export enum WarningColumn {
+  Warned90 = 'warned_90_at',
+  Warned30 = 'warned_30_at',
+  Warned7 = 'warned_7_at',
+}
+
+export async function markAlbumWarned(albumId: string, field: WarningColumn): Promise<void> {
+  await pool.query(`UPDATE albums SET ${field} = NOW() WHERE id = $1`, [albumId]);
+}
+
+export async function getExpiredAlbums(): Promise<Album[]> {
+  const result = await pool.query<AlbumRow>('SELECT * FROM albums WHERE access_expires_at < NOW()');
+  return result.rows.map(toAlbum);
+}

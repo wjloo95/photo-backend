@@ -1,7 +1,7 @@
 import { Router, RequestHandler } from 'express';
 import multer from 'multer';
-import os from 'node:os';
 import path from 'node:path';
+import { UPLOAD_TMP_DIR } from '../config/uploads';
 import { insertAlbum, getAlbumById, updateAlbumById, deleteAlbumById } from '../db/queries/albums';
 import { getClientByUserId } from '../db/queries/clients';
 import { AlbumType, UserRole } from '../types';
@@ -21,11 +21,9 @@ import fs from 'node:fs/promises';
 
 const router = Router();
 
-// Uploaded files land here temporarily, under their *original* multer-
-// generated names — see createAlbumPhotosBatch below for why they get
-// renamed before the background job ever looks at them.
-const UPLOAD_TMP_DIR = path.join(os.tmpdir(), 'sys-photo-uploads');
-
+// Uploaded files land here temporarily (see config/uploads.ts), under their
+// *original* multer-generated names — see createAlbumPhotosBatch below for
+// why they get renamed before the background job ever looks at them.
 const upload = multer({
   storage: multer.diskStorage({ destination: UPLOAD_TMP_DIR }),
   limits: { fileSize: 25 * 1024 * 1024 }, // 25MB/file — arbitrary but non-infinite; unbounded multipart bodies are a DoS vector
