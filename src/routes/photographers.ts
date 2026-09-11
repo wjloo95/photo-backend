@@ -3,8 +3,9 @@ import { getPhotographerByUserId, updatePhotographerByUserId } from '../db/queri
 import { getPhotographerClientsByUserId } from '../db/queries/clients';
 import { getPhotographerAlbumsByUserId } from '../db/queries/albums';
 import { getPendingInvitesByPhotographerId } from '../db/queries/invites';
-import { Album, VisibilityType } from '../types';
+import { Album, Photographer, VisibilityType } from '../types';
 import { AppError } from '../types/AppError';
+import cache from '../cache';
 
 const router = Router();
 
@@ -40,13 +41,23 @@ function toAlbumSummary(album: Album): AlbumSummary {
 // after /users, so req.user is populated by the time this handler runs.
 export const getPhotographerFromId: RequestHandler = async (req, res, next) => {
   try {
-    const photographer = await getPhotographerByUserId(req.params.id);
+    const cacheKey = `photographer:profile:${req.params.id}`;
+    let photographer = await cache.get<Photographer>(cacheKey);
+
+    if (!photographer) {
+      photographer = await getPhotographerByUserId(req.params.id);
+      if (photographer) {
+        await cache.set(cacheKey, photographer, 3600);
+      } else {
+        return next(new AppError('Photographer not found', 404));
+      }
+    }
     const isOwner = req.params.id === req.user?.id;
 
     // 404 rather than 403 for a private, non-owned profile — same response
     // as a nonexistent id, so a caller can't distinguish "no such
     // photographer" from "exists but is private."
-    if (!photographer || (photographer.visibility === VisibilityType.private && !isOwner)) {
+    if (photographer.visibility === VisibilityType.private && !isOwner) {
       return next(new AppError('Photographer not found', 404));
     }
 
@@ -122,6 +133,8 @@ export const updatePhotographerFromId: RequestHandler = async (req, res, next) =
     if (!photographer) {
       return next(new AppError('Photographer not found', 404));
     }
+
+    await cache.del(`photographer:profile:${req.params.id}`);
 
     res.json(photographer);
   } catch (err) {

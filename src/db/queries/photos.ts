@@ -21,6 +21,18 @@ export function toPhoto(row: PhotoRow): Photo {
   };
 }
 
+// cache.get<Photo[]>() (src/cache/index.ts) does JSON.parse(raw) as T — on a
+// cache hit, uploadedAt comes back as the ISO string JSON.stringify turned
+// it into, not a real Date. Same rehydration story as rehydrateAlbumDates
+// in db/queries/albums.ts — call this on any Photo[] that came from
+// cache.get before doing anything with uploadedAt beyond res.json().
+export function rehydratePhotoDates(photo: Photo): Photo {
+  return {
+    ...photo,
+    uploadedAt: new Date(photo.uploadedAt),
+  };
+}
+
 /**
  * Inserts `count` new `photos` rows for an album (one per uploaded file)
  * plus a matching `photo_albums` row for each, atomically.

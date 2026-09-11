@@ -20,6 +20,17 @@ vi.mock('../../db/queries/albums', () => ({
   getAlbumById: getAlbumByIdMock,
   updateAlbumById: updateAlbumByIdMock,
   deleteAlbumById: deleteAlbumByIdMock,
+  // Real implementation, not a stub — tests need the actual date coercion
+  // to verify a cache hit really does come back rehydrated.
+  rehydrateAlbumDates: (album: Album) => ({
+    ...album,
+    shootDate: new Date(album.shootDate),
+    accessExpiresAt: new Date(album.accessExpiresAt),
+    warned90At: album.warned90At ? new Date(album.warned90At) : null,
+    warned30At: album.warned30At ? new Date(album.warned30At) : null,
+    warned7At: album.warned7At ? new Date(album.warned7At) : null,
+    createdAt: new Date(album.createdAt),
+  }),
 }));
 
 const { getClientByUserIdMock } = vi.hoisted(() => ({ getClientByUserIdMock: vi.fn() }));
@@ -30,7 +41,7 @@ vi.mock('../../db/queries/clients', () => ({
 const {
   insertPhotosForAlbumMock,
   getPhotoByIdMock,
-  getPhotosForAlbumMock,
+  getAllPhotosForAlbumMock,
   getAlbumOwnersForPhotoMock,
   addPhotoToAlbumMock,
   removePhotoFromAlbumMock,
@@ -38,7 +49,7 @@ const {
 } = vi.hoisted(() => ({
   insertPhotosForAlbumMock: vi.fn(),
   getPhotoByIdMock: vi.fn(),
-  getPhotosForAlbumMock: vi.fn(),
+  getAllPhotosForAlbumMock: vi.fn(),
   getAlbumOwnersForPhotoMock: vi.fn(),
   addPhotoToAlbumMock: vi.fn(),
   removePhotoFromAlbumMock: vi.fn(),
@@ -47,11 +58,22 @@ const {
 vi.mock('../../db/queries/photos', () => ({
   insertPhotosForAlbum: insertPhotosForAlbumMock,
   getPhotoById: getPhotoByIdMock,
-  getPhotosForAlbum: getPhotosForAlbumMock,
+  getAllPhotosForAlbum: getAllPhotosForAlbumMock,
+  // Real implementation, not a stub — same reasoning as rehydrateAlbumDates.
+  rehydratePhotoDates: (photo: Photo) => ({ ...photo, uploadedAt: new Date(photo.uploadedAt) }),
   getAlbumOwnersForPhoto: getAlbumOwnersForPhotoMock,
   addPhotoToAlbum: addPhotoToAlbumMock,
   removePhotoFromAlbum: removePhotoFromAlbumMock,
   deletePhotosFromAlbum: deletePhotosFromAlbumMock,
+}));
+
+const { cacheGetMock, cacheSetMock, cacheDelMock } = vi.hoisted(() => ({
+  cacheGetMock: vi.fn(),
+  cacheSetMock: vi.fn(),
+  cacheDelMock: vi.fn(),
+}));
+vi.mock('../../cache', () => ({
+  default: { get: cacheGetMock, set: cacheSetMock, del: cacheDelMock },
 }));
 
 const { photoQueueAddMock } = vi.hoisted(() => ({ photoQueueAddMock: vi.fn() }));
@@ -152,6 +174,11 @@ const makeRes = (): Response =>
 
 beforeEach(() => {
   vi.clearAllMocks();
+  // Default every test to a cache miss — tests that care about a hit
+  // override this explicitly with cacheGetMock.mockResolvedValueOnce(...).
+  cacheGetMock.mockResolvedValue(null);
+  cacheSetMock.mockResolvedValue(undefined);
+  cacheDelMock.mockResolvedValue(undefined);
 });
 
 describe('createAlbum', () => {
@@ -258,6 +285,30 @@ describe('getAlbumFromId', () => {
     await getAlbumFromId(req, res, next);
 
     expect(next).toHaveBeenCalledWith(expect.objectContaining({ status: 404 }));
+  });
+
+  it('on a cache miss, queries the DB and populates album:meta: with a 900s TTL', async () => {
+    getAlbumByIdMock.mockResolvedValue(shootAlbum);
+    const req = makeReq({ params: { id: 'album-1' }, user: photographer });
+    const res = makeRes();
+    const next = vi.fn() as NextFunction;
+
+    await getAlbumFromId(req, res, next);
+
+    expect(getAlbumByIdMock).toHaveBeenCalledWith('album-1');
+    expect(cacheSetMock).toHaveBeenCalledWith('album:meta:album-1', shootAlbum, 900);
+  });
+
+  it('on a cache hit, uses the cached album instead of querying the DB', async () => {
+    cacheGetMock.mockResolvedValue(shootAlbum);
+    const req = makeReq({ params: { id: 'album-1' }, user: photographer });
+    const res = makeRes();
+    const next = vi.fn() as NextFunction;
+
+    await getAlbumFromId(req, res, next);
+
+    expect(getAlbumByIdMock).not.toHaveBeenCalled();
+    expect(res.json).toHaveBeenCalledWith(shootAlbum);
   });
 
   it('responds with the album when the caller is the owning photographer', async () => {
@@ -377,6 +428,9 @@ describe('updateAlbumFromId', () => {
     expect(updateAlbumByIdMock).toHaveBeenCalledWith('album-1', { thumbnailPhotoId: 'photo-2' });
     expect(res.json).toHaveBeenCalledWith(updated);
     expect(next).not.toHaveBeenCalled();
+    // Invalidates the album's own metadata, not the (unrelated) photo list.
+    expect(cacheDelMock).toHaveBeenCalledWith('album:meta:album-1');
+    expect(cacheDelMock).not.toHaveBeenCalledWith('album:photos:album-1');
   });
 
   it('forwards errors from the query layer to next(err)', async () => {
@@ -431,6 +485,8 @@ describe('deleteAlbumFromId', () => {
     expect(res.status).toHaveBeenCalledWith(204);
     expect(res.json).not.toHaveBeenCalled();
     expect(next).not.toHaveBeenCalled();
+    expect(cacheDelMock).toHaveBeenCalledWith('album:meta:album-1');
+    expect(cacheDelMock).not.toHaveBeenCalledWith('album:photos:album-1');
   });
 
   it('forwards errors from the query layer to next(err)', async () => {
@@ -561,6 +617,9 @@ describe('createAlbumPhotosBatch', () => {
     expect(res.status).toHaveBeenCalledWith(202);
     expect(res.json).toHaveBeenCalledWith(createdPhotos);
     expect(next).not.toHaveBeenCalled();
+    // New photos change album membership, not the album's own fields.
+    expect(cacheDelMock).toHaveBeenCalledWith('album:photos:album-1');
+    expect(cacheDelMock).not.toHaveBeenCalledWith('album:meta:album-1');
   });
 
   it('forwards errors from insertPhotosForAlbum, without renaming files or enqueuing a job', async () => {
@@ -624,7 +683,7 @@ describe('getAlbumPhotos', () => {
     await getAlbumPhotos(req, res, next);
 
     expect(next).toHaveBeenCalledWith(expect.objectContaining({ status: 404 }));
-    expect(getPhotosForAlbumMock).not.toHaveBeenCalled();
+    expect(getAllPhotosForAlbumMock).not.toHaveBeenCalled();
   });
 
   it('forwards a 403 AppError when the caller is neither the owning photographer nor the linked client', async () => {
@@ -636,12 +695,12 @@ describe('getAlbumPhotos', () => {
     await getAlbumPhotos(req, res, next);
 
     expect(next).toHaveBeenCalledWith(expect.objectContaining({ status: 403 }));
-    expect(getPhotosForAlbumMock).not.toHaveBeenCalled();
+    expect(getAllPhotosForAlbumMock).not.toHaveBeenCalled();
   });
 
-  it('responds with photos for the owning photographer, defaulting to page 1 / limit 20', async () => {
+  it('on a full cache miss, fetches the album and the full photo list, populates both caches, and responds', async () => {
     getAlbumByIdMock.mockResolvedValue(shootAlbum);
-    getPhotosForAlbumMock.mockResolvedValue(createdPhotos);
+    getAllPhotosForAlbumMock.mockResolvedValue(createdPhotos);
 
     const req = makeReq({ params: { id: 'album-1' }, user: photographer });
     const res = makeRes();
@@ -649,14 +708,49 @@ describe('getAlbumPhotos', () => {
 
     await getAlbumPhotos(req, res, next);
 
-    expect(getPhotosForAlbumMock).toHaveBeenCalledWith('album-1', 20, 0);
+    expect(getAlbumByIdMock).toHaveBeenCalledWith('album-1');
+    expect(cacheSetMock).toHaveBeenCalledWith('album:meta:album-1', shootAlbum, 900);
+    expect(getAllPhotosForAlbumMock).toHaveBeenCalledWith('album-1');
+    expect(cacheSetMock).toHaveBeenCalledWith('album:photos:album-1', createdPhotos, 300);
     expect(res.json).toHaveBeenCalledWith(createdPhotos);
     expect(next).not.toHaveBeenCalled();
   });
 
+  it('reuses a cached album instead of querying the DB again', async () => {
+    cacheGetMock.mockImplementation((key: string) =>
+      Promise.resolve(key === 'album:meta:album-1' ? shootAlbum : null),
+    );
+    getAllPhotosForAlbumMock.mockResolvedValue(createdPhotos);
+
+    const req = makeReq({ params: { id: 'album-1' }, user: photographer });
+    const res = makeRes();
+    const next = vi.fn() as NextFunction;
+
+    await getAlbumPhotos(req, res, next);
+
+    expect(getAlbumByIdMock).not.toHaveBeenCalled();
+    expect(res.json).toHaveBeenCalledWith(createdPhotos);
+  });
+
+  it('reuses a cached photo list instead of querying the DB again', async () => {
+    cacheGetMock.mockImplementation((key: string) =>
+      Promise.resolve(key === 'album:photos:album-1' ? createdPhotos : null),
+    );
+    getAlbumByIdMock.mockResolvedValue(shootAlbum);
+
+    const req = makeReq({ params: { id: 'album-1' }, user: photographer });
+    const res = makeRes();
+    const next = vi.fn() as NextFunction;
+
+    await getAlbumPhotos(req, res, next);
+
+    expect(getAllPhotosForAlbumMock).not.toHaveBeenCalled();
+    expect(res.json).toHaveBeenCalledWith(createdPhotos);
+  });
+
   it('responds with photos for the linked client', async () => {
     getAlbumByIdMock.mockResolvedValue(shootAlbum);
-    getPhotosForAlbumMock.mockResolvedValue(createdPhotos);
+    getAllPhotosForAlbumMock.mockResolvedValue(createdPhotos);
 
     const req = makeReq({ params: { id: 'album-1' }, user: client });
     const res = makeRes();
@@ -668,26 +762,33 @@ describe('getAlbumPhotos', () => {
     expect(next).not.toHaveBeenCalled();
   });
 
-  it('computes OFFSET as (page - 1) * limit from ?page=&limit=', async () => {
+  it('slices the full cached/fetched list by page and limit in application code, rather than querying per page', async () => {
+    const manyPhotos: Photo[] = Array.from({ length: 5 }, (_, i) => ({
+      ...createdPhotos[0],
+      id: `photo-${i + 1}`,
+    }));
     getAlbumByIdMock.mockResolvedValue(shootAlbum);
-    getPhotosForAlbumMock.mockResolvedValue([]);
+    getAllPhotosForAlbumMock.mockResolvedValue(manyPhotos);
 
     const req = makeReq({
       params: { id: 'album-1' },
       user: photographer,
-      query: { page: '3', limit: '10' },
+      query: { page: '2', limit: '2' },
     });
     const res = makeRes();
     const next = vi.fn() as NextFunction;
 
     await getAlbumPhotos(req, res, next);
 
-    expect(getPhotosForAlbumMock).toHaveBeenCalledWith('album-1', 10, 20);
+    // page 2, limit 2 => offset 2 => items at index 2 and 3
+    expect(res.json).toHaveBeenCalledWith([manyPhotos[2], manyPhotos[3]]);
+    // Fetched once regardless of page — not once per page.
+    expect(getAllPhotosForAlbumMock).toHaveBeenCalledTimes(1);
   });
 
   it('caps limit at 100 even when a larger value is requested', async () => {
     getAlbumByIdMock.mockResolvedValue(shootAlbum);
-    getPhotosForAlbumMock.mockResolvedValue([]);
+    getAllPhotosForAlbumMock.mockResolvedValue(createdPhotos);
 
     const req = makeReq({
       params: { id: 'album-1' },
@@ -699,14 +800,17 @@ describe('getAlbumPhotos', () => {
 
     await getAlbumPhotos(req, res, next);
 
-    expect(getPhotosForAlbumMock).toHaveBeenCalledWith('album-1', 100, 0);
+    // Only 2 photos exist in the fixture, so a capped limit of 100 still
+    // returns both — the cap itself is exercised by not throwing/truncating
+    // unexpectedly for an oversized requested limit.
+    expect(res.json).toHaveBeenCalledWith(createdPhotos);
   });
 
   it.each([['0'], ['-1'], ['abc'], ['1.5']])(
-    'falls back to defaults for an invalid page value (%s)',
+    'falls back to page 1 for an invalid page value (%s)',
     async (page) => {
       getAlbumByIdMock.mockResolvedValue(shootAlbum);
-      getPhotosForAlbumMock.mockResolvedValue([]);
+      getAllPhotosForAlbumMock.mockResolvedValue(createdPhotos);
 
       const req = makeReq({ params: { id: 'album-1' }, user: photographer, query: { page } });
       const res = makeRes();
@@ -714,14 +818,14 @@ describe('getAlbumPhotos', () => {
 
       await getAlbumPhotos(req, res, next);
 
-      expect(getPhotosForAlbumMock).toHaveBeenCalledWith('album-1', 20, 0);
+      expect(res.json).toHaveBeenCalledWith(createdPhotos);
     },
   );
 
   it('forwards errors from the query layer to next(err)', async () => {
     const dbError = new Error('connection lost');
     getAlbumByIdMock.mockResolvedValue(shootAlbum);
-    getPhotosForAlbumMock.mockRejectedValue(dbError);
+    getAllPhotosForAlbumMock.mockRejectedValue(dbError);
 
     const req = makeReq({ params: { id: 'album-1' }, user: photographer });
     const res = makeRes();
@@ -807,6 +911,10 @@ describe('deleteAlbumPhotosBatch', () => {
     expect(deletePhotosFromAlbumMock).toHaveBeenCalledWith('album-1', ['photo-1', 'photo-2']);
     expect(res.status).toHaveBeenCalledWith(204);
     expect(next).not.toHaveBeenCalled();
+    // Removing photos changes album membership, not the album's own fields —
+    // regression check for the album:meta:/album:photos: key mixup.
+    expect(cacheDelMock).toHaveBeenCalledWith('album:photos:album-1');
+    expect(cacheDelMock).not.toHaveBeenCalledWith('album:meta:album-1');
   });
 
   it('forwards errors from the query layer to next(err)', async () => {
@@ -905,6 +1013,10 @@ describe('addAlbumPhoto', () => {
     expect(res.status).toHaveBeenCalledWith(201);
     expect(res.json).toHaveBeenCalledWith(createdPhotos[0]);
     expect(next).not.toHaveBeenCalled();
+    // Linking a photo in changes album membership, not the album's own fields —
+    // regression check for the album:meta:/album:photos: key mixup.
+    expect(cacheDelMock).toHaveBeenCalledWith('album:photos:album-1');
+    expect(cacheDelMock).not.toHaveBeenCalledWith('album:meta:album-1');
   });
 
   it('forwards errors from the query layer to next(err)', async () => {
@@ -964,6 +1076,10 @@ describe('removeAlbumPhoto', () => {
     expect(removePhotoFromAlbumMock).toHaveBeenCalledWith('album-1', 'photo-1');
     expect(res.status).toHaveBeenCalledWith(204);
     expect(next).not.toHaveBeenCalled();
+    // Unlinking a photo changes album membership, not the album's own fields —
+    // regression check for the album:meta:/album:photos: key mixup.
+    expect(cacheDelMock).toHaveBeenCalledWith('album:photos:album-1');
+    expect(cacheDelMock).not.toHaveBeenCalledWith('album:meta:album-1');
   });
 
   it('forwards errors from the query layer to next(err)', async () => {

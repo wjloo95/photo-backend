@@ -32,6 +32,15 @@ vi.mock('../../db/queries/invites', () => ({
   getPendingInvitesByPhotographerId: getPendingInvitesByPhotographerIdMock,
 }));
 
+const { cacheGetMock, cacheSetMock, cacheDelMock } = vi.hoisted(() => ({
+  cacheGetMock: vi.fn(),
+  cacheSetMock: vi.fn(),
+  cacheDelMock: vi.fn(),
+}));
+vi.mock('../../cache', () => ({
+  default: { get: cacheGetMock, set: cacheSetMock, del: cacheDelMock },
+}));
+
 import {
   getPhotographerFromId as getPhotographerFromIdHandler,
   getPhotographerClientsFromId as getPhotographerClientsFromIdHandler,
@@ -79,6 +88,11 @@ const photographer: Photographer = {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  // Default every test to a cache miss — tests that care about a hit
+  // override this explicitly with cacheGetMock.mockResolvedValueOnce(...).
+  cacheGetMock.mockResolvedValue(null);
+  cacheSetMock.mockResolvedValue(undefined);
+  cacheDelMock.mockResolvedValue(undefined);
 });
 
 describe('getPhotographerFromId', () => {
@@ -155,6 +169,51 @@ describe('getPhotographerFromId', () => {
 
     expect(res.json).toHaveBeenCalledWith(privatePhotographer);
     expect(next).not.toHaveBeenCalled();
+  });
+
+  it('on a cache miss, queries the DB and populates photographer:profile: with a 3600s TTL', async () => {
+    getPhotographerByUserIdMock.mockResolvedValue(photographer);
+    const req = makeReq({ params: { id: 'photog-1' }, user: owner });
+    const res = makeRes();
+    const next = vi.fn() as NextFunction;
+
+    await getPhotographerFromId(req, res, next);
+
+    expect(getPhotographerByUserIdMock).toHaveBeenCalledWith('photog-1');
+    expect(cacheSetMock).toHaveBeenCalledWith('photographer:profile:photog-1', photographer, 3600);
+  });
+
+  it('on a cache hit, uses the cached photographer instead of querying the DB', async () => {
+    cacheGetMock.mockResolvedValue(photographer);
+    const req = makeReq({ params: { id: 'photog-1' }, user: owner });
+    const res = makeRes();
+    const next = vi.fn() as NextFunction;
+
+    await getPhotographerFromId(req, res, next);
+
+    expect(getPhotographerByUserIdMock).not.toHaveBeenCalled();
+    expect(res.json).toHaveBeenCalledWith(photographer);
+    expect(next).not.toHaveBeenCalled();
+  });
+
+  it('caches the raw record (not a per-viewer response) even when the viewer will be denied', async () => {
+    // The cache is keyed by photographer id, shared across every viewer —
+    // it must hold the real record so a later request from the owner gets
+    // a correct hit, not whatever a non-owner was allowed to see.
+    const privatePhotographer: Photographer = { ...photographer, visibility: VisibilityType.private };
+    getPhotographerByUserIdMock.mockResolvedValue(privatePhotographer);
+    const req = makeReq({ params: { id: 'photog-1' }, user: someoneElse });
+    const res = makeRes();
+    const next = vi.fn() as NextFunction;
+
+    await getPhotographerFromId(req, res, next);
+
+    expect(cacheSetMock).toHaveBeenCalledWith(
+      'photographer:profile:photog-1',
+      privatePhotographer,
+      3600,
+    );
+    expect(next).toHaveBeenCalledWith(expect.objectContaining({ status: 404 }));
   });
 });
 
@@ -384,6 +443,7 @@ describe('updatePhotographerFromId', () => {
     });
     expect(res.json).toHaveBeenCalledWith(updated);
     expect(next).not.toHaveBeenCalled();
+    expect(cacheDelMock).toHaveBeenCalledWith('photographer:profile:photog-1');
   });
 
   it('forwards a 404 AppError when the photographer does not exist', async () => {
@@ -395,6 +455,7 @@ describe('updatePhotographerFromId', () => {
     await updatePhotographerFromId(req, res, next);
 
     expect(next).toHaveBeenCalledWith(expect.objectContaining({ status: 404 }));
+    expect(cacheDelMock).not.toHaveBeenCalled();
   });
 
   it('forwards errors from the query layer to next(err)', async () => {

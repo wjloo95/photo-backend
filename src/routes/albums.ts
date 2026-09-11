@@ -2,15 +2,22 @@ import { Router, RequestHandler } from 'express';
 import multer from 'multer';
 import path from 'node:path';
 import { UPLOAD_TMP_DIR } from '../config/uploads';
-import { insertAlbum, getAlbumById, updateAlbumById, deleteAlbumById } from '../db/queries/albums';
+import {
+  insertAlbum,
+  getAlbumById,
+  updateAlbumById,
+  deleteAlbumById,
+  rehydrateAlbumDates,
+} from '../db/queries/albums';
 import { getClientByUserId } from '../db/queries/clients';
-import { AlbumType, UserRole } from '../types';
+import { Album, AlbumType, Photo, UserRole } from '../types';
 import { requireRole } from '../middleware/requireRole';
 import { AppError } from '../types/AppError';
 import {
   insertPhotosForAlbum,
   getPhotoById,
-  getPhotosForAlbum,
+  getAllPhotosForAlbum,
+  rehydratePhotoDates,
   getAlbumOwnersForPhoto,
   addPhotoToAlbum,
   removePhotoFromAlbum,
@@ -18,6 +25,7 @@ import {
 } from '../db/queries/photos';
 import { photoQueue, PhotoJobName } from '../jobs/queues/photoQueue';
 import fs from 'node:fs/promises';
+import cache from '../cache';
 
 const router = Router();
 
@@ -80,10 +88,19 @@ export const createAlbum: RequestHandler = async (req, res, next) => {
 // linked client (per 4.1). Neither is a public/portfolio-viewing case here.
 export const getAlbumFromId: RequestHandler = async (req, res, next) => {
   try {
-    const album = await getAlbumById(req.params.id);
+    const cacheKey = `album:meta:${req.params.id}`;
+    let album = await cache.get<Album>(cacheKey);
 
-    if (!album) {
-      return next(new AppError('Album not found', 404));
+    if (album) {
+      album = rehydrateAlbumDates(album);
+    } else {
+      album = await getAlbumById(req.params.id);
+
+      if (album) {
+        await cache.set(cacheKey, album, 900);
+      } else {
+        return next(new AppError('Album not found', 404));
+      }
     }
 
     const isOwnerPhotographer =
@@ -116,6 +133,8 @@ export const updateAlbumFromId: RequestHandler = async (req, res, next) => {
     const { thumbnailPhotoId } = req.body;
     const updatedAlbum = await updateAlbumById(req.params.id, { thumbnailPhotoId });
 
+    await cache.del(`album:meta:${req.params.id}`);
+
     res.json(updatedAlbum);
   } catch (err) {
     next(err);
@@ -136,6 +155,9 @@ export const deleteAlbumFromId: RequestHandler = async (req, res, next) => {
     }
 
     await deleteAlbumById(req.params.id);
+
+    await cache.del(`album:meta:${req.params.id}`);
+
     res.status(204).send();
   } catch (err) {
     next(err);
@@ -187,6 +209,8 @@ export const createAlbumPhotosBatch: RequestHandler = async (req, res, next) => 
       albumId: album.id,
     });
 
+    await cache.del(`album:photos:${album.id}`);
+
     res.status(202).json(photos);
   } catch (err) {
     next(err);
@@ -211,10 +235,22 @@ function parsePaginationParam(value: unknown, fallback: number, max?: number): n
 
 export const getAlbumPhotos: RequestHandler = async (req, res, next) => {
   try {
-    const album = await getAlbumById(req.params.id);
+    // Reuses the same album:meta: cache entry getAlbumFromId populates —
+    // this handler only needs the album for the ownership check below, no
+    // reason to hit the DB (or a second cache key) separately for it.
+    const albumCacheKey = `album:meta:${req.params.id}`;
+    let album = await cache.get<Album>(albumCacheKey);
 
-    if (!album) {
-      return next(new AppError('Album not found', 404));
+    if (album) {
+      album = rehydrateAlbumDates(album);
+    } else {
+      album = await getAlbumById(req.params.id);
+
+      if (album) {
+        await cache.set(albumCacheKey, album, 900);
+      } else {
+        return next(new AppError('Album not found', 404));
+      }
     }
 
     const isOwnerPhotographer =
@@ -225,6 +261,21 @@ export const getAlbumPhotos: RequestHandler = async (req, res, next) => {
       return next(new AppError('Forbidden', 403));
     }
 
+    // Cached as the FULL photo list under one key per album, not one key
+    // per (page, limit) — see the design note in MEMORY.md. Pagination is
+    // applied in application code below, against whatever came back from
+    // cache or DB, so a single cache.del('album:photos:{id}') on any photo
+    // add/remove invalidates every page at once.
+    const photosCacheKey = `album:photos:${req.params.id}`;
+    let allPhotos = await cache.get<Photo[]>(photosCacheKey);
+
+    if (allPhotos) {
+      allPhotos = allPhotos.map(rehydratePhotoDates);
+    } else {
+      allPhotos = await getAllPhotosForAlbum(album.id);
+      await cache.set(photosCacheKey, allPhotos, 300);
+    }
+
     const page = parsePaginationParam(req.query.page, 1);
     const limit = parsePaginationParam(
       req.query.limit,
@@ -233,9 +284,7 @@ export const getAlbumPhotos: RequestHandler = async (req, res, next) => {
     );
     const offset = (page - 1) * limit;
 
-    const photos = await getPhotosForAlbum(album.id, limit, offset);
-
-    res.json(photos);
+    res.json(allPhotos.slice(offset, offset + limit));
   } catch (err) {
     next(err);
   }
@@ -262,6 +311,8 @@ export const deleteAlbumPhotosBatch: RequestHandler = async (req, res, next) => 
     }
 
     await deletePhotosFromAlbum(album.id, photoIds);
+
+    await cache.del(`album:photos:${req.params.id}`);
 
     res.status(204).send();
   } catch (err) {
@@ -302,6 +353,8 @@ export const addAlbumPhoto: RequestHandler = async (req, res, next) => {
 
     await addPhotoToAlbum(album.id, photo.id);
 
+    await cache.del(`album:photos:${req.params.id}`);
+
     res.status(201).json(photo);
   } catch (err) {
     next(err);
@@ -323,6 +376,8 @@ export const removeAlbumPhoto: RequestHandler = async (req, res, next) => {
     }
 
     await removePhotoFromAlbum(album.id, req.params.photoId);
+
+    await cache.del(`album:photos:${req.params.id}`);
 
     res.status(204).send();
   } catch (err) {

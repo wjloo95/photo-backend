@@ -32,6 +32,29 @@ function toAlbum(row: AlbumRow): Album {
   };
 }
 
+// cache.get<Album>() (src/cache/index.ts) does JSON.parse(raw) as T — on a
+// cache hit, every Date field actually comes back as the ISO string
+// JSON.stringify turned it into on the way in, not a real Date. TypeScript
+// has no way to know that, so the type is lying: comparisons like `a.date <
+// b.date` still happen to work on those strings (ISO-8601 sorts
+// lexicographically the same as chronologically), but anything calling an
+// actual Date method (.getTime(), addThreeYears's .setFullYear(), etc.) or
+// doing `a.date - b.date` (NaN - NaN, since strings aren't numeric) will
+// misbehave. Call this on any Album that came from cache.get before doing
+// anything with its date fields beyond passing it straight to res.json()
+// (which would re-stringify a real Date to the same ISO string anyway).
+export function rehydrateAlbumDates(album: Album): Album {
+  return {
+    ...album,
+    shootDate: new Date(album.shootDate),
+    accessExpiresAt: new Date(album.accessExpiresAt),
+    warned90At: album.warned90At ? new Date(album.warned90At) : null,
+    warned30At: album.warned30At ? new Date(album.warned30At) : null,
+    warned7At: album.warned7At ? new Date(album.warned7At) : null,
+    createdAt: new Date(album.createdAt),
+  };
+}
+
 export async function getPhotographerAlbumsByUserId(photographerId: string): Promise<Album[]> {
   const result = await pool.query<AlbumRow>('SELECT * FROM albums WHERE photographer_id = $1', [
     photographerId,
