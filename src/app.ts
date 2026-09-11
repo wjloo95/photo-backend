@@ -27,6 +27,7 @@ import helmet from 'helmet';
 import cors from 'cors';
 import { errorHandler } from './middleware/errorHandler';
 import { auth, loadUser } from './middleware/auth';
+import usersRouter from './routes/users';
 
 const app = express();
 
@@ -40,7 +41,16 @@ app.use(cors());
 
 // Parse incoming JSON request bodies.
 // Without this, req.body is always undefined.
-app.use(express.json());
+// The `verify` hook stashes the raw bytes on req.rawBody before they're
+// parsed — some handlers (the /users webhook) need to hash the exact bytes
+// the sender signed, not a re-serialized copy of the parsed object.
+app.use(
+  express.json({
+    verify: (req, _res, buf) => {
+      (req as express.Request).rawBody = buf;
+    },
+  }),
+);
 
 // ── Health check ──────────────────────────────────────────────
 // Simple endpoint used by the AWS ALB to confirm the server is alive.
@@ -50,6 +60,11 @@ app.get('/health', (_req, res) => {
   res.sendStatus(200);
 });
 
+// /users is the Auth0 signup webhook — it authenticates via HMAC signature
+// (see verifyWebhookSignature in routes/users.ts), not a user JWT, so it's
+// mounted before the auth/loadUser middleware below.
+app.use('/users', usersRouter);
+
 // auth verifies the JWT and attaches the decoded payload to req.auth.
 // loadUser resolves it to the full DB user and attaches it to req.user.
 // Both call next(err) on failure, handled by errorHandler below.
@@ -58,7 +73,6 @@ app.use(loadUser);
 
 // ── Routes ────────────────────────────────────────────────────
 // Mount your routers here as you build them.
-// (nothing mounted yet — start with users)
 
 // TODO: remove before shipping — triggers errorHandler with different error shapes
 app.get('/test-error', (_req, _res, next) => {
