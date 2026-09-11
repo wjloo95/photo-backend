@@ -1,10 +1,11 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { getPhotographerClientsByUserId, getClientByUserId } from '../clients';
-
-const { mockQuery } = vi.hoisted(() => ({ mockQuery: vi.fn() }));
-vi.mock('../../../config/database', () => ({
-  pool: { query: mockQuery },
+jest.mock('../../../config/database', () => ({
+  pool: { query: jest.fn() },
 }));
+
+import { getPhotographerClientsByUserId, getClientByUserId } from '../clients';
+import { pool } from '../../../config/database';
+
+const mockQuery = pool.query as jest.Mock;
 
 beforeEach(() => {
   mockQuery.mockReset();

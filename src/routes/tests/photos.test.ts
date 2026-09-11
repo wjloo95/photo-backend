@@ -1,19 +1,18 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { Request, Response, NextFunction } from 'express';
 import { Photo, PhotoStatus, User, UserRole } from '../../types';
 
-const { getPhotoByIdMock, getAlbumOwnersForPhotoMock, deletePhotoByIdMock } = vi.hoisted(() => ({
-  getPhotoByIdMock: vi.fn(),
-  getAlbumOwnersForPhotoMock: vi.fn(),
-  deletePhotoByIdMock: vi.fn(),
-}));
-vi.mock('../../db/queries/photos', () => ({
-  getPhotoById: getPhotoByIdMock,
-  getAlbumOwnersForPhoto: getAlbumOwnersForPhotoMock,
-  deletePhotoById: deletePhotoByIdMock,
+jest.mock('../../db/queries/photos', () => ({
+  getPhotoById: jest.fn(),
+  getAlbumOwnersForPhoto: jest.fn(),
+  deletePhotoById: jest.fn(),
 }));
 
 import { getPhotoFromId as getPhotoFromIdHandler, deletePhotoFromId as deletePhotoFromIdHandler } from '../photos';
+import { getPhotoById, getAlbumOwnersForPhoto, deletePhotoById } from '../../db/queries/photos';
+
+const getPhotoByIdMock = getPhotoById as jest.Mock;
+const getAlbumOwnersForPhotoMock = getAlbumOwnersForPhoto as jest.Mock;
+const deletePhotoByIdMock = deletePhotoById as jest.Mock;
 
 type Handler = (req: Request, res: Response, next: NextFunction) => Promise<void>;
 const getPhotoFromId = getPhotoFromIdHandler as unknown as Handler;
@@ -59,13 +58,13 @@ const makeReq = (opts: { params?: object; user?: User } = {}): Request =>
 
 const makeRes = (): Response =>
   ({
-    status: vi.fn().mockReturnThis(),
-    json: vi.fn().mockReturnThis(),
-    send: vi.fn().mockReturnThis(),
+    status: jest.fn().mockReturnThis(),
+    json: jest.fn().mockReturnThis(),
+    send: jest.fn().mockReturnThis(),
   }) as unknown as Response;
 
 beforeEach(() => {
-  vi.clearAllMocks();
+  jest.clearAllMocks();
 });
 
 describe('getPhotoFromId', () => {
@@ -73,7 +72,7 @@ describe('getPhotoFromId', () => {
     getPhotoByIdMock.mockResolvedValue(null);
     const req = makeReq({ params: { id: 'missing-id' }, user: photographer });
     const res = makeRes();
-    const next = vi.fn() as NextFunction;
+    const next = jest.fn() as NextFunction;
 
     await getPhotoFromId(req, res, next);
 
@@ -89,7 +88,7 @@ describe('getPhotoFromId', () => {
 
     const req = makeReq({ params: { id: 'photo-1' }, user: someoneElsePhotographer });
     const res = makeRes();
-    const next = vi.fn() as NextFunction;
+    const next = jest.fn() as NextFunction;
 
     await getPhotoFromId(req, res, next);
 
@@ -104,7 +103,7 @@ describe('getPhotoFromId', () => {
 
     const req = makeReq({ params: { id: 'photo-1' }, user: someoneElseClient });
     const res = makeRes();
-    const next = vi.fn() as NextFunction;
+    const next = jest.fn() as NextFunction;
 
     await getPhotoFromId(req, res, next);
 
@@ -117,7 +116,7 @@ describe('getPhotoFromId', () => {
 
     const req = makeReq({ params: { id: 'photo-1' }, user: photographer });
     const res = makeRes();
-    const next = vi.fn() as NextFunction;
+    const next = jest.fn() as NextFunction;
 
     await getPhotoFromId(req, res, next);
 
@@ -132,7 +131,7 @@ describe('getPhotoFromId', () => {
 
     const req = makeReq({ params: { id: 'photo-1' }, user: photographer });
     const res = makeRes();
-    const next = vi.fn() as NextFunction;
+    const next = jest.fn() as NextFunction;
 
     await getPhotoFromId(req, res, next);
 
@@ -148,7 +147,7 @@ describe('getPhotoFromId', () => {
 
     const req = makeReq({ params: { id: 'photo-1' }, user: client });
     const res = makeRes();
-    const next = vi.fn() as NextFunction;
+    const next = jest.fn() as NextFunction;
 
     await getPhotoFromId(req, res, next);
 
@@ -165,7 +164,7 @@ describe('getPhotoFromId', () => {
 
     const req = makeReq({ params: { id: 'photo-1' }, user: photographer });
     const res = makeRes();
-    const next = vi.fn() as NextFunction;
+    const next = jest.fn() as NextFunction;
 
     await getPhotoFromId(req, res, next);
 
@@ -178,7 +177,7 @@ describe('getPhotoFromId', () => {
     getPhotoByIdMock.mockRejectedValue(dbError);
     const req = makeReq({ params: { id: 'photo-1' }, user: photographer });
     const res = makeRes();
-    const next = vi.fn() as NextFunction;
+    const next = jest.fn() as NextFunction;
 
     await getPhotoFromId(req, res, next);
 
@@ -191,7 +190,7 @@ describe('deletePhotoFromId', () => {
     getPhotoByIdMock.mockResolvedValue(null);
     const req = makeReq({ params: { id: 'missing-id' }, user: photographer });
     const res = makeRes();
-    const next = vi.fn() as NextFunction;
+    const next = jest.fn() as NextFunction;
 
     await deletePhotoFromId(req, res, next);
 
@@ -207,7 +206,7 @@ describe('deletePhotoFromId', () => {
 
     const req = makeReq({ params: { id: 'photo-1' }, user: someoneElsePhotographer });
     const res = makeRes();
-    const next = vi.fn() as NextFunction;
+    const next = jest.fn() as NextFunction;
 
     await deletePhotoFromId(req, res, next);
 
@@ -221,7 +220,7 @@ describe('deletePhotoFromId', () => {
 
     const req = makeReq({ params: { id: 'photo-1' }, user: photographer });
     const res = makeRes();
-    const next = vi.fn() as NextFunction;
+    const next = jest.fn() as NextFunction;
 
     await deletePhotoFromId(req, res, next);
 
@@ -238,7 +237,7 @@ describe('deletePhotoFromId', () => {
 
     const req = makeReq({ params: { id: 'photo-1' }, user: photographer });
     const res = makeRes();
-    const next = vi.fn() as NextFunction;
+    const next = jest.fn() as NextFunction;
 
     await deletePhotoFromId(req, res, next);
 
@@ -257,7 +256,7 @@ describe('deletePhotoFromId', () => {
 
     const req = makeReq({ params: { id: 'photo-1' }, user: photographer });
     const res = makeRes();
-    const next = vi.fn() as NextFunction;
+    const next = jest.fn() as NextFunction;
 
     await deletePhotoFromId(req, res, next);
 

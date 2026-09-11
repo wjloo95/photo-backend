@@ -1,45 +1,28 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import type { Request, Response, NextFunction } from 'express';
 import { Invite, InviteStatus, User, UserRole } from '../../types';
 
-const {
-  insertInviteMock,
-  getInviteByTokenMock,
-  expireInviteMock,
-  getInviteByIdMock,
-  refreshInviteTokenMock,
-  deleteInviteByIdMock,
-} = vi.hoisted(() => ({
-  insertInviteMock: vi.fn(),
-  getInviteByTokenMock: vi.fn(),
-  expireInviteMock: vi.fn(),
-  getInviteByIdMock: vi.fn(),
-  refreshInviteTokenMock: vi.fn(),
-  deleteInviteByIdMock: vi.fn(),
-}));
-vi.mock('../../db/queries/invites', () => ({
-  insertInvite: insertInviteMock,
-  getInviteByToken: getInviteByTokenMock,
-  expireInvite: expireInviteMock,
-  getInviteById: getInviteByIdMock,
-  refreshInviteToken: refreshInviteTokenMock,
-  deleteInviteById: deleteInviteByIdMock,
+jest.mock('../../db/queries/invites', () => ({
+  insertInvite: jest.fn(),
+  getInviteByToken: jest.fn(),
+  expireInvite: jest.fn(),
+  getInviteById: jest.fn(),
+  refreshInviteToken: jest.fn(),
+  deleteInviteById: jest.fn(),
 }));
 
 // Deterministic "random" bytes so the test can assert on the exact token
 // passed through to insertInvite, without needing real randomness.
-const { randomBytesMock } = vi.hoisted(() => ({ randomBytesMock: vi.fn() }));
-vi.mock('node:crypto', () => ({
-  default: { randomBytes: randomBytesMock },
-  randomBytes: randomBytesMock,
-}));
+jest.mock('node:crypto', () => {
+  const randomBytesMock = jest.fn();
+  return { default: { randomBytes: randomBytesMock }, randomBytes: randomBytesMock };
+});
 
 // auth/loadUser are applied directly on the POST route (this router is
 // mounted before the global auth chain in app.ts) — stub them as pass-through
 // so the handler tests can drive req.user themselves. Real auth/loadUser
 // behavior for this route is covered separately, the same way
 // users.auth-integration.test.ts covers PATCH /users/:id.
-vi.mock('../../middleware/auth', () => ({
+jest.mock('../../middleware/auth', () => ({
   auth: (_req: Request, _res: Response, next: NextFunction) => next(),
   loadUser: (_req: Request, _res: Response, next: NextFunction) => next(),
 }));
@@ -50,6 +33,23 @@ import {
   resendInvite as resendInviteHandler,
   cancelInvite as cancelInviteHandler,
 } from '../invites';
+import {
+  insertInvite,
+  getInviteByToken,
+  expireInvite,
+  getInviteById,
+  refreshInviteToken,
+  deleteInviteById,
+} from '../../db/queries/invites';
+import { randomBytes } from 'node:crypto';
+
+const insertInviteMock = insertInvite as jest.Mock;
+const getInviteByTokenMock = getInviteByToken as jest.Mock;
+const expireInviteMock = expireInvite as jest.Mock;
+const getInviteByIdMock = getInviteById as jest.Mock;
+const refreshInviteTokenMock = refreshInviteToken as jest.Mock;
+const deleteInviteByIdMock = deleteInviteById as jest.Mock;
+const randomBytesMock = randomBytes as jest.Mock;
 
 type Handler = (req: Request, res: Response, next: NextFunction) => Promise<void>;
 const createInvite = createInviteHandler as unknown as Handler;
@@ -79,22 +79,22 @@ const makeValidateReq = (token?: string): Request =>
 
 const makeRes = (): Response =>
   ({
-    status: vi.fn().mockReturnThis(),
-    json: vi.fn().mockReturnThis(),
-    send: vi.fn().mockReturnThis(),
+    status: jest.fn().mockReturnThis(),
+    json: jest.fn().mockReturnThis(),
+    send: jest.fn().mockReturnThis(),
   }) as unknown as Response;
 
 const FAKE_TOKEN = 'b'.repeat(64);
 
 beforeEach(() => {
-  vi.clearAllMocks();
+  jest.clearAllMocks();
   randomBytesMock.mockReturnValue({ toString: () => FAKE_TOKEN });
-  vi.useFakeTimers();
-  vi.setSystemTime(new Date('2026-08-26T00:00:00Z'));
+  jest.useFakeTimers();
+  jest.setSystemTime(new Date('2026-08-26T00:00:00Z'));
 });
 
 afterEach(() => {
-  vi.useRealTimers();
+  jest.useRealTimers();
 });
 
 describe('createInvite', () => {
@@ -117,7 +117,7 @@ describe('createInvite', () => {
       body: { email: 'client@example.com', clientName: 'Jane Client' },
     });
     const res = makeRes();
-    const next = vi.fn() as NextFunction;
+    const next = jest.fn() as NextFunction;
 
     await createInvite(req, res, next);
 
@@ -142,7 +142,7 @@ describe('createInvite', () => {
       body: { email: 'client@example.com', clientName: 'Jane Client' },
     });
     const res = makeRes();
-    const next = vi.fn() as NextFunction;
+    const next = jest.fn() as NextFunction;
 
     await createInvite(req, res, next);
 
@@ -168,7 +168,7 @@ describe('validateInvite', () => {
     getInviteByTokenMock.mockResolvedValue(null);
     const req = makeValidateReq('does-not-exist');
     const res = makeRes();
-    const next = vi.fn() as NextFunction;
+    const next = jest.fn() as NextFunction;
 
     await validateInvite(req, res, next);
 
@@ -181,7 +181,7 @@ describe('validateInvite', () => {
     getInviteByTokenMock.mockResolvedValue({ ...pendingInvite, status: InviteStatus.accepted });
     const req = makeValidateReq(FAKE_TOKEN);
     const res = makeRes();
-    const next = vi.fn() as NextFunction;
+    const next = jest.fn() as NextFunction;
 
     await validateInvite(req, res, next);
 
@@ -193,7 +193,7 @@ describe('validateInvite', () => {
     getInviteByTokenMock.mockResolvedValue({ ...pendingInvite, status: InviteStatus.expired });
     const req = makeValidateReq(FAKE_TOKEN);
     const res = makeRes();
-    const next = vi.fn() as NextFunction;
+    const next = jest.fn() as NextFunction;
 
     await validateInvite(req, res, next);
 
@@ -208,7 +208,7 @@ describe('validateInvite', () => {
     });
     const req = makeValidateReq(FAKE_TOKEN);
     const res = makeRes();
-    const next = vi.fn() as NextFunction;
+    const next = jest.fn() as NextFunction;
 
     await validateInvite(req, res, next);
 
@@ -221,7 +221,7 @@ describe('validateInvite', () => {
     getInviteByTokenMock.mockResolvedValue(pendingInvite);
     const req = makeValidateReq(FAKE_TOKEN);
     const res = makeRes();
-    const next = vi.fn() as NextFunction;
+    const next = jest.fn() as NextFunction;
 
     await validateInvite(req, res, next);
 
@@ -239,7 +239,7 @@ describe('validateInvite', () => {
     getInviteByTokenMock.mockRejectedValue(dbError);
     const req = makeValidateReq(FAKE_TOKEN);
     const res = makeRes();
-    const next = vi.fn() as NextFunction;
+    const next = jest.fn() as NextFunction;
 
     await validateInvite(req, res, next);
 
@@ -264,7 +264,7 @@ describe('resendInvite', () => {
     getInviteByIdMock.mockResolvedValue(null);
     const req = makeParamsReq({ params: { id: 'missing-id' }, user: photographer });
     const res = makeRes();
-    const next = vi.fn() as NextFunction;
+    const next = jest.fn() as NextFunction;
 
     await resendInvite(req, res, next);
 
@@ -276,7 +276,7 @@ describe('resendInvite', () => {
     getInviteByIdMock.mockResolvedValue(pendingInvite);
     const req = makeParamsReq({ params: { id: 'invite-1' }, user: someoneElse });
     const res = makeRes();
-    const next = vi.fn() as NextFunction;
+    const next = jest.fn() as NextFunction;
 
     await resendInvite(req, res, next);
 
@@ -288,7 +288,7 @@ describe('resendInvite', () => {
     getInviteByIdMock.mockResolvedValue({ ...pendingInvite, status: InviteStatus.accepted });
     const req = makeParamsReq({ params: { id: 'invite-1' }, user: photographer });
     const res = makeRes();
-    const next = vi.fn() as NextFunction;
+    const next = jest.fn() as NextFunction;
 
     await resendInvite(req, res, next);
 
@@ -308,7 +308,7 @@ describe('resendInvite', () => {
 
     const req = makeParamsReq({ params: { id: 'invite-1' }, user: photographer });
     const res = makeRes();
-    const next = vi.fn() as NextFunction;
+    const next = jest.fn() as NextFunction;
 
     await resendInvite(req, res, next);
 
@@ -326,7 +326,7 @@ describe('resendInvite', () => {
     getInviteByIdMock.mockRejectedValue(dbError);
     const req = makeParamsReq({ params: { id: 'invite-1' }, user: photographer });
     const res = makeRes();
-    const next = vi.fn() as NextFunction;
+    const next = jest.fn() as NextFunction;
 
     await resendInvite(req, res, next);
 
@@ -351,7 +351,7 @@ describe('cancelInvite', () => {
     getInviteByIdMock.mockResolvedValue(null);
     const req = makeParamsReq({ params: { id: 'missing-id' }, user: photographer });
     const res = makeRes();
-    const next = vi.fn() as NextFunction;
+    const next = jest.fn() as NextFunction;
 
     await cancelInvite(req, res, next);
 
@@ -363,7 +363,7 @@ describe('cancelInvite', () => {
     getInviteByIdMock.mockResolvedValue(pendingInvite);
     const req = makeParamsReq({ params: { id: 'invite-1' }, user: someoneElse });
     const res = makeRes();
-    const next = vi.fn() as NextFunction;
+    const next = jest.fn() as NextFunction;
 
     await cancelInvite(req, res, next);
 
@@ -377,7 +377,7 @@ describe('cancelInvite', () => {
 
     const req = makeParamsReq({ params: { id: 'invite-1' }, user: photographer });
     const res = makeRes();
-    const next = vi.fn() as NextFunction;
+    const next = jest.fn() as NextFunction;
 
     await cancelInvite(req, res, next);
 
@@ -392,7 +392,7 @@ describe('cancelInvite', () => {
     getInviteByIdMock.mockRejectedValue(dbError);
     const req = makeParamsReq({ params: { id: 'invite-1' }, user: photographer });
     const res = makeRes();
-    const next = vi.fn() as NextFunction;
+    const next = jest.fn() as NextFunction;
 
     await cancelInvite(req, res, next);
 

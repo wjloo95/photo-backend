@@ -1,22 +1,10 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { Album, AlbumType, Photo, PhotoStatus } from '../../../types';
 
-const {
-  deleteAlbumByIdMock,
-  getAlbumsNeedingWarningMock,
-  getExpiredAlbumsMock,
-  markAlbumWarnedMock,
-} = vi.hoisted(() => ({
-  deleteAlbumByIdMock: vi.fn(),
-  getAlbumsNeedingWarningMock: vi.fn(),
-  getExpiredAlbumsMock: vi.fn(),
-  markAlbumWarnedMock: vi.fn(),
-}));
-vi.mock('../../../db/queries/albums', () => ({
-  deleteAlbumById: deleteAlbumByIdMock,
-  getAlbumsNeedingWarning: getAlbumsNeedingWarningMock,
-  getExpiredAlbums: getExpiredAlbumsMock,
-  markAlbumWarned: markAlbumWarnedMock,
+jest.mock('../../../db/queries/albums', () => ({
+  deleteAlbumById: jest.fn(),
+  getAlbumsNeedingWarning: jest.fn(),
+  getExpiredAlbums: jest.fn(),
+  markAlbumWarned: jest.fn(),
   // Real enum values, not mocks — tests assert against these directly, same
   // convention as PhotoJobName/ExpiryJobName elsewhere in this test suite.
   WarningColumn: {
@@ -26,23 +14,16 @@ vi.mock('../../../db/queries/albums', () => ({
   },
 }));
 
-const { deletePhotoByIdMock, getAlbumOwnersForPhotoMock, getAllPhotosForAlbumMock } = vi.hoisted(
-  () => ({
-    deletePhotoByIdMock: vi.fn(),
-    getAlbumOwnersForPhotoMock: vi.fn(),
-    getAllPhotosForAlbumMock: vi.fn(),
-  }),
-);
-vi.mock('../../../db/queries/photos', () => ({
-  deletePhotoById: deletePhotoByIdMock,
-  getAlbumOwnersForPhoto: getAlbumOwnersForPhotoMock,
-  getAllPhotosForAlbum: getAllPhotosForAlbumMock,
+jest.mock('../../../db/queries/photos', () => ({
+  deletePhotoById: jest.fn(),
+  getAlbumOwnersForPhoto: jest.fn(),
+  getAllPhotosForAlbum: jest.fn(),
 }));
 
 // expiryQueue.ts constructs a real BullMQ Queue at import time — replacing
 // the whole module (we only need the ExpiryJobName enum's values) avoids
 // that entirely, rather than mocking bullmq itself.
-vi.mock('../../queues/expiryQueue', () => ({
+jest.mock('../../queues/expiryQueue', () => ({
   ExpiryJobName: {
     Warn90Days: 'warn-90-days',
     Warn30Days: 'warn-30-days',
@@ -51,10 +32,9 @@ vi.mock('../../queues/expiryQueue', () => ({
   },
 }));
 
-const { destroyMock } = vi.hoisted(() => ({ destroyMock: vi.fn() }));
-vi.mock('cloudinary', () => ({
+jest.mock('cloudinary', () => ({
   v2: {
-    uploader: { destroy: destroyMock },
+    uploader: { destroy: jest.fn() },
   },
 }));
 
@@ -63,8 +43,29 @@ vi.mock('cloudinary', () => ({
 // actually composes correctly with it (isolation, aggregate throw, and the
 // nested-call ordering the DeleteExpired branch depends on).
 import { ExpiryJobName } from '../../queues/expiryQueue';
-import { WarningColumn } from '../../../db/queries/albums';
+import {
+  WarningColumn,
+  deleteAlbumById,
+  getAlbumsNeedingWarning,
+  getExpiredAlbums,
+  markAlbumWarned,
+} from '../../../db/queries/albums';
+import {
+  deletePhotoById,
+  getAlbumOwnersForPhoto,
+  getAllPhotosForAlbum,
+} from '../../../db/queries/photos';
+import { v2 as cloudinary } from 'cloudinary';
 import { processExpiryJob } from '../expiryProcessor';
+
+const deleteAlbumByIdMock = deleteAlbumById as jest.Mock;
+const getAlbumsNeedingWarningMock = getAlbumsNeedingWarning as jest.Mock;
+const getExpiredAlbumsMock = getExpiredAlbums as jest.Mock;
+const markAlbumWarnedMock = markAlbumWarned as jest.Mock;
+const deletePhotoByIdMock = deletePhotoById as jest.Mock;
+const getAlbumOwnersForPhotoMock = getAlbumOwnersForPhoto as jest.Mock;
+const getAllPhotosForAlbumMock = getAllPhotosForAlbum as jest.Mock;
+const destroyMock = cloudinary.uploader.destroy as jest.Mock;
 
 function album(overrides: Partial<Album> = {}): Album {
   return {
@@ -96,8 +97,8 @@ function photo(overrides: Partial<Photo> = {}): Photo {
 }
 
 beforeEach(() => {
-  vi.resetAllMocks();
-  vi.spyOn(console, 'error').mockImplementation(() => undefined);
+  jest.resetAllMocks();
+  jest.spyOn(console, 'error').mockImplementation(() => undefined);
 });
 
 describe.each([

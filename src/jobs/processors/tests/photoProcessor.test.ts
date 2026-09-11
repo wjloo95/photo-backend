@@ -1,34 +1,24 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
 import path from 'node:path';
 import { Photo, PhotoStatus } from '../../../types';
 
-const { getPhotoByIdMock, markPhotoReadyMock } = vi.hoisted(() => ({
-  getPhotoByIdMock: vi.fn(),
-  markPhotoReadyMock: vi.fn(),
-}));
-vi.mock('../../../db/queries/photos', () => ({
-  getPhotoById: getPhotoByIdMock,
-  markPhotoReady: markPhotoReadyMock,
+jest.mock('../../../db/queries/photos', () => ({
+  getPhotoById: jest.fn(),
+  markPhotoReady: jest.fn(),
 }));
 
-const { cloudinaryConfigMock, uploadMock } = vi.hoisted(() => ({
-  cloudinaryConfigMock: vi.fn(),
-  uploadMock: vi.fn(),
-}));
-vi.mock('cloudinary', () => ({
+jest.mock('cloudinary', () => ({
   v2: {
-    config: cloudinaryConfigMock,
-    uploader: { upload: uploadMock },
+    config: jest.fn(),
+    uploader: { upload: jest.fn() },
   },
 }));
 
-const { unlinkMock } = vi.hoisted(() => ({ unlinkMock: vi.fn() }));
-vi.mock('node:fs/promises', () => ({
-  default: { unlink: unlinkMock },
-  unlink: unlinkMock,
-}));
+jest.mock('node:fs/promises', () => {
+  const unlinkMock = jest.fn();
+  return { default: { unlink: unlinkMock }, unlink: unlinkMock };
+});
 
-vi.mock('../../../config/env', () => ({
+jest.mock('../../../config/env', () => ({
   env: {
     CLOUDINARY_CLOUD_NAME: 'test-cloud',
     CLOUDINARY_API_KEY: 'test-key',
@@ -36,12 +26,21 @@ vi.mock('../../../config/env', () => ({
   },
 }));
 
-const { UPLOAD_TMP_DIR } = vi.hoisted(() => ({ UPLOAD_TMP_DIR: '/tmp/sys-photo-uploads-test' }));
-vi.mock('../../../config/uploads', () => ({ UPLOAD_TMP_DIR }));
+const UPLOAD_TMP_DIR = '/tmp/sys-photo-uploads-test';
+jest.mock('../../../config/uploads', () => ({ UPLOAD_TMP_DIR: '/tmp/sys-photo-uploads-test' }));
 
 // Importing this module runs cloudinary.config(...) as a side effect, once,
 // here — before any beforeEach has a chance to clear cloudinaryConfigMock.
 import { processPhotoBatch } from '../photoProcessor';
+import { getPhotoById, markPhotoReady } from '../../../db/queries/photos';
+import { v2 as cloudinary } from 'cloudinary';
+import { unlink } from 'node:fs/promises';
+
+const getPhotoByIdMock = getPhotoById as jest.Mock;
+const markPhotoReadyMock = markPhotoReady as jest.Mock;
+const cloudinaryConfigMock = cloudinary.config as jest.Mock;
+const uploadMock = cloudinary.uploader.upload as jest.Mock;
+const unlinkMock = unlink as jest.Mock;
 
 function photo(overrides: Partial<Photo> = {}): Photo {
   return {
@@ -60,7 +59,7 @@ beforeEach(() => {
   uploadMock.mockReset();
   markPhotoReadyMock.mockReset();
   unlinkMock.mockReset();
-  vi.spyOn(console, 'error').mockImplementation(() => undefined);
+  jest.spyOn(console, 'error').mockImplementation(() => undefined);
   // Deliberately not touching cloudinaryConfigMock — it's only ever called
   // once, at module import above, and clearing it here would make the
   // "configures cloudinary" test below unable to see that call.

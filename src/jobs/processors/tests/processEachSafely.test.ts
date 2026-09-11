@@ -1,13 +1,12 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { processEachSafely } from '../processEachSafely';
 
 beforeEach(() => {
-  vi.spyOn(console, 'error').mockImplementation(() => undefined);
+  jest.spyOn(console, 'error').mockImplementation(() => undefined);
 });
 
 describe('processEachSafely — happy path', () => {
   it('calls fn once per item, in order', async () => {
-    const fn = vi.fn().mockResolvedValue(undefined);
+    const fn = jest.fn().mockResolvedValue(undefined);
 
     await processEachSafely([1, 2, 3], fn);
 
@@ -17,11 +16,11 @@ describe('processEachSafely — happy path', () => {
   });
 
   it('resolves without throwing when every item succeeds', async () => {
-    await expect(processEachSafely([1, 2, 3], vi.fn().mockResolvedValue(undefined))).resolves.toBeUndefined();
+    await expect(processEachSafely([1, 2, 3], jest.fn().mockResolvedValue(undefined))).resolves.toBeUndefined();
   });
 
   it('does nothing and does not throw for an empty batch', async () => {
-    const fn = vi.fn();
+    const fn = jest.fn();
 
     await expect(processEachSafely([], fn)).resolves.toBeUndefined();
     expect(fn).not.toHaveBeenCalled();
@@ -30,7 +29,7 @@ describe('processEachSafely — happy path', () => {
 
 describe('processEachSafely — per-item failure isolation', () => {
   it('still attempts every item even when an earlier one fails', async () => {
-    const fn = vi.fn().mockImplementation((item: number) => {
+    const fn = jest.fn().mockImplementation((item: number) => {
       if (item === 2) {
         return Promise.reject(new Error('boom'));
       }
@@ -47,7 +46,7 @@ describe('processEachSafely — per-item failure isolation', () => {
 
   it('logs the failing item alongside its error', async () => {
     const err = new Error('boom');
-    const fn = vi.fn().mockRejectedValue(err);
+    const fn = jest.fn().mockRejectedValue(err);
 
     await expect(processEachSafely(['item-1'], fn)).rejects.toThrow();
 
@@ -55,7 +54,7 @@ describe('processEachSafely — per-item failure isolation', () => {
   });
 
   it('throws once, reporting the failure count out of the batch size, using the given label', async () => {
-    const fn = vi.fn().mockRejectedValue(new Error('boom'));
+    const fn = jest.fn().mockRejectedValue(new Error('boom'));
 
     await expect(processEachSafely([1, 2], fn, 'albums')).rejects.toThrow(
       '2/2 albums failed to process',
@@ -63,13 +62,13 @@ describe('processEachSafely — per-item failure isolation', () => {
   });
 
   it('defaults the label to "items" when none is given', async () => {
-    const fn = vi.fn().mockRejectedValue(new Error('boom'));
+    const fn = jest.fn().mockRejectedValue(new Error('boom'));
 
     await expect(processEachSafely([1], fn)).rejects.toThrow('1/1 items failed to process');
   });
 
   it('only counts actual failures in the reported ratio, not the full batch', async () => {
-    const fn = vi.fn().mockImplementation((item: number) => {
+    const fn = jest.fn().mockImplementation((item: number) => {
       if (item === 2) {
         return Promise.reject(new Error('boom'));
       }

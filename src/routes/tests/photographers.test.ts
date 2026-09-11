@@ -1,44 +1,26 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { Request, Response, NextFunction } from 'express';
 import { AlbumType, InviteStatus, Photographer, User, UserRole, VisibilityType } from '../../types';
 
-const { getPhotographerByUserIdMock, updatePhotographerByUserIdMock } = vi.hoisted(() => ({
-  getPhotographerByUserIdMock: vi.fn(),
-  updatePhotographerByUserIdMock: vi.fn(),
-}));
-vi.mock('../../db/queries/photographers', () => ({
-  getPhotographerByUserId: getPhotographerByUserIdMock,
-  updatePhotographerByUserId: updatePhotographerByUserIdMock,
+jest.mock('../../db/queries/photographers', () => ({
+  getPhotographerByUserId: jest.fn(),
+  updatePhotographerByUserId: jest.fn(),
 }));
 
-const { getPhotographerClientsByUserIdMock } = vi.hoisted(() => ({
-  getPhotographerClientsByUserIdMock: vi.fn(),
-}));
-vi.mock('../../db/queries/clients', () => ({
-  getPhotographerClientsByUserId: getPhotographerClientsByUserIdMock,
+jest.mock('../../db/queries/clients', () => ({
+  getPhotographerClientsByUserId: jest.fn(),
 }));
 
-const { getPhotographerAlbumsByUserIdMock } = vi.hoisted(() => ({
-  getPhotographerAlbumsByUserIdMock: vi.fn(),
-}));
-vi.mock('../../db/queries/albums', () => ({
-  getPhotographerAlbumsByUserId: getPhotographerAlbumsByUserIdMock,
+jest.mock('../../db/queries/albums', () => ({
+  getPhotographerAlbumsByUserId: jest.fn(),
 }));
 
-const { getPendingInvitesByPhotographerIdMock } = vi.hoisted(() => ({
-  getPendingInvitesByPhotographerIdMock: vi.fn(),
-}));
-vi.mock('../../db/queries/invites', () => ({
-  getPendingInvitesByPhotographerId: getPendingInvitesByPhotographerIdMock,
+jest.mock('../../db/queries/invites', () => ({
+  getPendingInvitesByPhotographerId: jest.fn(),
 }));
 
-const { cacheGetMock, cacheSetMock, cacheDelMock } = vi.hoisted(() => ({
-  cacheGetMock: vi.fn(),
-  cacheSetMock: vi.fn(),
-  cacheDelMock: vi.fn(),
-}));
-vi.mock('../../cache', () => ({
-  default: { get: cacheGetMock, set: cacheSetMock, del: cacheDelMock },
+jest.mock('../../cache', () => ({
+  __esModule: true,
+  default: { get: jest.fn(), set: jest.fn(), del: jest.fn() },
 }));
 
 import {
@@ -48,6 +30,20 @@ import {
   getPhotographerInvitesFromId as getPhotographerInvitesFromIdHandler,
   updatePhotographerFromId as updatePhotographerFromIdHandler,
 } from '../photographers';
+import { getPhotographerByUserId, updatePhotographerByUserId } from '../../db/queries/photographers';
+import { getPhotographerClientsByUserId } from '../../db/queries/clients';
+import { getPhotographerAlbumsByUserId } from '../../db/queries/albums';
+import { getPendingInvitesByPhotographerId } from '../../db/queries/invites';
+import cache from '../../cache';
+
+const getPhotographerByUserIdMock = getPhotographerByUserId as jest.Mock;
+const updatePhotographerByUserIdMock = updatePhotographerByUserId as jest.Mock;
+const getPhotographerClientsByUserIdMock = getPhotographerClientsByUserId as jest.Mock;
+const getPhotographerAlbumsByUserIdMock = getPhotographerAlbumsByUserId as jest.Mock;
+const getPendingInvitesByPhotographerIdMock = getPendingInvitesByPhotographerId as jest.Mock;
+const cacheGetMock = cache.get as jest.Mock;
+const cacheSetMock = cache.set as jest.Mock;
+const cacheDelMock = cache.del as jest.Mock;
 
 // RequestHandler's type signature says it returns void, but the actual
 // implementation is async — cast so tests can await it.
@@ -60,8 +56,8 @@ const updatePhotographerFromId = updatePhotographerFromIdHandler as unknown as H
 
 const makeRes = (): Response =>
   ({
-    status: vi.fn().mockReturnThis(),
-    json: vi.fn().mockReturnThis(),
+    status: jest.fn().mockReturnThis(),
+    json: jest.fn().mockReturnThis(),
   }) as unknown as Response;
 
 const makeReq = (opts: { params?: object; user?: User; body?: object } = {}): Request =>
@@ -87,7 +83,7 @@ const photographer: Photographer = {
 };
 
 beforeEach(() => {
-  vi.clearAllMocks();
+  jest.clearAllMocks();
   // Default every test to a cache miss — tests that care about a hit
   // override this explicitly with cacheGetMock.mockResolvedValueOnce(...).
   cacheGetMock.mockResolvedValue(null);
@@ -100,7 +96,7 @@ describe('getPhotographerFromId', () => {
     getPhotographerByUserIdMock.mockResolvedValue(photographer);
     const req = makeReq({ params: { id: 'photog-1' } });
     const res = makeRes();
-    const next = vi.fn() as NextFunction;
+    const next = jest.fn() as NextFunction;
 
     await getPhotographerFromId(req, res, next);
 
@@ -113,7 +109,7 @@ describe('getPhotographerFromId', () => {
     getPhotographerByUserIdMock.mockResolvedValue(null);
     const req = makeReq({ params: { id: 'missing-id' } });
     const res = makeRes();
-    const next = vi.fn() as NextFunction;
+    const next = jest.fn() as NextFunction;
 
     await getPhotographerFromId(req, res, next);
 
@@ -126,7 +122,7 @@ describe('getPhotographerFromId', () => {
     getPhotographerByUserIdMock.mockRejectedValue(dbError);
     const req = makeReq({ params: { id: 'photog-1' } });
     const res = makeRes();
-    const next = vi.fn() as NextFunction;
+    const next = jest.fn() as NextFunction;
 
     await getPhotographerFromId(req, res, next);
 
@@ -137,7 +133,7 @@ describe('getPhotographerFromId', () => {
     getPhotographerByUserIdMock.mockResolvedValue(photographer);
     const req = makeReq({ params: { id: 'photog-1' }, user: someoneElse });
     const res = makeRes();
-    const next = vi.fn() as NextFunction;
+    const next = jest.fn() as NextFunction;
 
     await getPhotographerFromId(req, res, next);
 
@@ -150,7 +146,7 @@ describe('getPhotographerFromId', () => {
     getPhotographerByUserIdMock.mockResolvedValue(privatePhotographer);
     const req = makeReq({ params: { id: 'photog-1' }, user: someoneElse });
     const res = makeRes();
-    const next = vi.fn() as NextFunction;
+    const next = jest.fn() as NextFunction;
 
     await getPhotographerFromId(req, res, next);
 
@@ -163,7 +159,7 @@ describe('getPhotographerFromId', () => {
     getPhotographerByUserIdMock.mockResolvedValue(privatePhotographer);
     const req = makeReq({ params: { id: 'photog-1' }, user: owner });
     const res = makeRes();
-    const next = vi.fn() as NextFunction;
+    const next = jest.fn() as NextFunction;
 
     await getPhotographerFromId(req, res, next);
 
@@ -175,7 +171,7 @@ describe('getPhotographerFromId', () => {
     getPhotographerByUserIdMock.mockResolvedValue(photographer);
     const req = makeReq({ params: { id: 'photog-1' }, user: owner });
     const res = makeRes();
-    const next = vi.fn() as NextFunction;
+    const next = jest.fn() as NextFunction;
 
     await getPhotographerFromId(req, res, next);
 
@@ -187,7 +183,7 @@ describe('getPhotographerFromId', () => {
     cacheGetMock.mockResolvedValue(photographer);
     const req = makeReq({ params: { id: 'photog-1' }, user: owner });
     const res = makeRes();
-    const next = vi.fn() as NextFunction;
+    const next = jest.fn() as NextFunction;
 
     await getPhotographerFromId(req, res, next);
 
@@ -204,7 +200,7 @@ describe('getPhotographerFromId', () => {
     getPhotographerByUserIdMock.mockResolvedValue(privatePhotographer);
     const req = makeReq({ params: { id: 'photog-1' }, user: someoneElse });
     const res = makeRes();
-    const next = vi.fn() as NextFunction;
+    const next = jest.fn() as NextFunction;
 
     await getPhotographerFromId(req, res, next);
 
@@ -221,7 +217,7 @@ describe('getPhotographerClientsFromId', () => {
   it('responds 403 when the caller is not the photographer in the URL', async () => {
     const req = makeReq({ params: { id: 'photog-1' }, user: someoneElse });
     const res = makeRes();
-    const next = vi.fn() as NextFunction;
+    const next = jest.fn() as NextFunction;
 
     await getPhotographerClientsFromId(req, res, next);
 
@@ -234,7 +230,7 @@ describe('getPhotographerClientsFromId', () => {
     getPhotographerClientsByUserIdMock.mockResolvedValue(clients);
     const req = makeReq({ params: { id: 'photog-1' }, user: owner });
     const res = makeRes();
-    const next = vi.fn() as NextFunction;
+    const next = jest.fn() as NextFunction;
 
     await getPhotographerClientsFromId(req, res, next);
 
@@ -247,7 +243,7 @@ describe('getPhotographerClientsFromId', () => {
     getPhotographerClientsByUserIdMock.mockResolvedValue([]);
     const req = makeReq({ params: { id: 'photog-1' }, user: owner });
     const res = makeRes();
-    const next = vi.fn() as NextFunction;
+    const next = jest.fn() as NextFunction;
 
     await getPhotographerClientsFromId(req, res, next);
 
@@ -260,7 +256,7 @@ describe('getPhotographerClientsFromId', () => {
     getPhotographerClientsByUserIdMock.mockRejectedValue(dbError);
     const req = makeReq({ params: { id: 'photog-1' }, user: owner });
     const res = makeRes();
-    const next = vi.fn() as NextFunction;
+    const next = jest.fn() as NextFunction;
 
     await getPhotographerClientsFromId(req, res, next);
 
@@ -286,7 +282,7 @@ describe('getPhotographerAlbumsFromId', () => {
   it('responds 403 when the caller is not the photographer in the URL', async () => {
     const req = makeReq({ params: { id: 'photog-1' }, user: someoneElse });
     const res = makeRes();
-    const next = vi.fn() as NextFunction;
+    const next = jest.fn() as NextFunction;
 
     await getPhotographerAlbumsFromId(req, res, next);
 
@@ -298,7 +294,7 @@ describe('getPhotographerAlbumsFromId', () => {
     getPhotographerAlbumsByUserIdMock.mockResolvedValue([fullAlbum]);
     const req = makeReq({ params: { id: 'photog-1' }, user: owner });
     const res = makeRes();
-    const next = vi.fn() as NextFunction;
+    const next = jest.fn() as NextFunction;
 
     await getPhotographerAlbumsFromId(req, res, next);
 
@@ -314,7 +310,7 @@ describe('getPhotographerAlbumsFromId', () => {
         createdAt: fullAlbum.createdAt,
       },
     ]);
-    const sentAlbum = (res.json as unknown as ReturnType<typeof vi.fn>).mock.calls[0][0][0];
+    const sentAlbum = (res.json as unknown as ReturnType<typeof jest.fn>).mock.calls[0][0][0];
     expect(sentAlbum).not.toHaveProperty('warned90At');
     expect(sentAlbum).not.toHaveProperty('warned30At');
     expect(sentAlbum).not.toHaveProperty('warned7At');
@@ -324,7 +320,7 @@ describe('getPhotographerAlbumsFromId', () => {
     getPhotographerAlbumsByUserIdMock.mockResolvedValue([]);
     const req = makeReq({ params: { id: 'photog-1' }, user: owner });
     const res = makeRes();
-    const next = vi.fn() as NextFunction;
+    const next = jest.fn() as NextFunction;
 
     await getPhotographerAlbumsFromId(req, res, next);
 
@@ -337,7 +333,7 @@ describe('getPhotographerAlbumsFromId', () => {
     getPhotographerAlbumsByUserIdMock.mockRejectedValue(dbError);
     const req = makeReq({ params: { id: 'photog-1' }, user: owner });
     const res = makeRes();
-    const next = vi.fn() as NextFunction;
+    const next = jest.fn() as NextFunction;
 
     await getPhotographerAlbumsFromId(req, res, next);
 
@@ -361,7 +357,7 @@ describe('getPhotographerInvitesFromId', () => {
   it('responds 403 when the caller is not the photographer in the URL', async () => {
     const req = makeReq({ params: { id: 'photog-1' }, user: someoneElse });
     const res = makeRes();
-    const next = vi.fn() as NextFunction;
+    const next = jest.fn() as NextFunction;
 
     await getPhotographerInvitesFromId(req, res, next);
 
@@ -373,7 +369,7 @@ describe('getPhotographerInvitesFromId', () => {
     getPendingInvitesByPhotographerIdMock.mockResolvedValue([pendingInvite]);
     const req = makeReq({ params: { id: 'photog-1' }, user: owner });
     const res = makeRes();
-    const next = vi.fn() as NextFunction;
+    const next = jest.fn() as NextFunction;
 
     await getPhotographerInvitesFromId(req, res, next);
 
@@ -386,7 +382,7 @@ describe('getPhotographerInvitesFromId', () => {
     getPendingInvitesByPhotographerIdMock.mockResolvedValue([]);
     const req = makeReq({ params: { id: 'photog-1' }, user: owner });
     const res = makeRes();
-    const next = vi.fn() as NextFunction;
+    const next = jest.fn() as NextFunction;
 
     await getPhotographerInvitesFromId(req, res, next);
 
@@ -399,7 +395,7 @@ describe('getPhotographerInvitesFromId', () => {
     getPendingInvitesByPhotographerIdMock.mockRejectedValue(dbError);
     const req = makeReq({ params: { id: 'photog-1' }, user: owner });
     const res = makeRes();
-    const next = vi.fn() as NextFunction;
+    const next = jest.fn() as NextFunction;
 
     await getPhotographerInvitesFromId(req, res, next);
 
@@ -415,7 +411,7 @@ describe('updatePhotographerFromId', () => {
       body: { bio: 'new bio' },
     });
     const res = makeRes();
-    const next = vi.fn() as NextFunction;
+    const next = jest.fn() as NextFunction;
 
     await updatePhotographerFromId(req, res, next);
 
@@ -432,7 +428,7 @@ describe('updatePhotographerFromId', () => {
       body: { bio: 'new bio', instagramHandle: '@photog1', profilePhotoUrl: photographer.profilePhotoUrl },
     });
     const res = makeRes();
-    const next = vi.fn() as NextFunction;
+    const next = jest.fn() as NextFunction;
 
     await updatePhotographerFromId(req, res, next);
 
@@ -450,7 +446,7 @@ describe('updatePhotographerFromId', () => {
     updatePhotographerByUserIdMock.mockResolvedValue(null);
     const req = makeReq({ params: { id: 'photog-1' }, user: owner, body: { bio: 'new bio' } });
     const res = makeRes();
-    const next = vi.fn() as NextFunction;
+    const next = jest.fn() as NextFunction;
 
     await updatePhotographerFromId(req, res, next);
 
@@ -463,7 +459,7 @@ describe('updatePhotographerFromId', () => {
     updatePhotographerByUserIdMock.mockRejectedValue(dbError);
     const req = makeReq({ params: { id: 'photog-1' }, user: owner, body: { bio: 'new bio' } });
     const res = makeRes();
-    const next = vi.fn() as NextFunction;
+    const next = jest.fn() as NextFunction;
 
     await updatePhotographerFromId(req, res, next);
 

@@ -1,25 +1,13 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { Request, Response, NextFunction } from 'express';
 import os from 'node:os';
 import path from 'node:path';
 import { Album, AlbumType, Photo, PhotoStatus, User, UserRole } from '../../types';
 
-const {
-  insertAlbumMock,
-  getAlbumByIdMock,
-  updateAlbumByIdMock,
-  deleteAlbumByIdMock,
-} = vi.hoisted(() => ({
-  insertAlbumMock: vi.fn(),
-  getAlbumByIdMock: vi.fn(),
-  updateAlbumByIdMock: vi.fn(),
-  deleteAlbumByIdMock: vi.fn(),
-}));
-vi.mock('../../db/queries/albums', () => ({
-  insertAlbum: insertAlbumMock,
-  getAlbumById: getAlbumByIdMock,
-  updateAlbumById: updateAlbumByIdMock,
-  deleteAlbumById: deleteAlbumByIdMock,
+jest.mock('../../db/queries/albums', () => ({
+  insertAlbum: jest.fn(),
+  getAlbumById: jest.fn(),
+  updateAlbumById: jest.fn(),
+  deleteAlbumById: jest.fn(),
   // Real implementation, not a stub — tests need the actual date coercion
   // to verify a cache hit really does come back rehydrated.
   rehydrateAlbumDates: (album: Album) => ({
@@ -33,61 +21,37 @@ vi.mock('../../db/queries/albums', () => ({
   }),
 }));
 
-const { getClientByUserIdMock } = vi.hoisted(() => ({ getClientByUserIdMock: vi.fn() }));
-vi.mock('../../db/queries/clients', () => ({
-  getClientByUserId: getClientByUserIdMock,
+jest.mock('../../db/queries/clients', () => ({
+  getClientByUserId: jest.fn(),
 }));
 
-const {
-  insertPhotosForAlbumMock,
-  getPhotoByIdMock,
-  getAllPhotosForAlbumMock,
-  getAlbumOwnersForPhotoMock,
-  addPhotoToAlbumMock,
-  removePhotoFromAlbumMock,
-  deletePhotosFromAlbumMock,
-} = vi.hoisted(() => ({
-  insertPhotosForAlbumMock: vi.fn(),
-  getPhotoByIdMock: vi.fn(),
-  getAllPhotosForAlbumMock: vi.fn(),
-  getAlbumOwnersForPhotoMock: vi.fn(),
-  addPhotoToAlbumMock: vi.fn(),
-  removePhotoFromAlbumMock: vi.fn(),
-  deletePhotosFromAlbumMock: vi.fn(),
-}));
-vi.mock('../../db/queries/photos', () => ({
-  insertPhotosForAlbum: insertPhotosForAlbumMock,
-  getPhotoById: getPhotoByIdMock,
-  getAllPhotosForAlbum: getAllPhotosForAlbumMock,
+jest.mock('../../db/queries/photos', () => ({
+  insertPhotosForAlbum: jest.fn(),
+  getPhotoById: jest.fn(),
+  getAllPhotosForAlbum: jest.fn(),
   // Real implementation, not a stub — same reasoning as rehydrateAlbumDates.
   rehydratePhotoDates: (photo: Photo) => ({ ...photo, uploadedAt: new Date(photo.uploadedAt) }),
-  getAlbumOwnersForPhoto: getAlbumOwnersForPhotoMock,
-  addPhotoToAlbum: addPhotoToAlbumMock,
-  removePhotoFromAlbum: removePhotoFromAlbumMock,
-  deletePhotosFromAlbum: deletePhotosFromAlbumMock,
+  getAlbumOwnersForPhoto: jest.fn(),
+  addPhotoToAlbum: jest.fn(),
+  removePhotoFromAlbum: jest.fn(),
+  deletePhotosFromAlbum: jest.fn(),
 }));
 
-const { cacheGetMock, cacheSetMock, cacheDelMock } = vi.hoisted(() => ({
-  cacheGetMock: vi.fn(),
-  cacheSetMock: vi.fn(),
-  cacheDelMock: vi.fn(),
-}));
-vi.mock('../../cache', () => ({
-  default: { get: cacheGetMock, set: cacheSetMock, del: cacheDelMock },
+jest.mock('../../cache', () => ({
+  __esModule: true,
+  default: { get: jest.fn(), set: jest.fn(), del: jest.fn() },
 }));
 
-const { photoQueueAddMock } = vi.hoisted(() => ({ photoQueueAddMock: vi.fn() }));
-vi.mock('../../jobs/queues/photoQueue', () => ({
-  photoQueue: { add: photoQueueAddMock },
+jest.mock('../../jobs/queues/photoQueue', () => ({
+  photoQueue: { add: jest.fn() },
   // Real enum value, not the mock — routes/tests assert against this string.
   PhotoJobName: { ProcessBatch: 'process-batch' },
 }));
 
-const { renameMock } = vi.hoisted(() => ({ renameMock: vi.fn() }));
-vi.mock('node:fs/promises', () => ({
-  default: { rename: renameMock },
-  rename: renameMock,
-}));
+jest.mock('node:fs/promises', () => {
+  const renameMock = jest.fn();
+  return { __esModule: true, default: { rename: renameMock }, rename: renameMock };
+});
 
 import {
   createAlbum as createAlbumHandler,
@@ -100,6 +64,38 @@ import {
   addAlbumPhoto as addAlbumPhotoHandler,
   removeAlbumPhoto as removeAlbumPhotoHandler,
 } from '../albums';
+import { insertAlbum, getAlbumById, updateAlbumById, deleteAlbumById } from '../../db/queries/albums';
+import { getClientByUserId } from '../../db/queries/clients';
+import {
+  insertPhotosForAlbum,
+  getPhotoById,
+  getAllPhotosForAlbum,
+  getAlbumOwnersForPhoto,
+  addPhotoToAlbum,
+  removePhotoFromAlbum,
+  deletePhotosFromAlbum,
+} from '../../db/queries/photos';
+import cache from '../../cache';
+import { photoQueue } from '../../jobs/queues/photoQueue';
+import { rename } from 'node:fs/promises';
+
+const insertAlbumMock = insertAlbum as jest.Mock;
+const getAlbumByIdMock = getAlbumById as jest.Mock;
+const updateAlbumByIdMock = updateAlbumById as jest.Mock;
+const deleteAlbumByIdMock = deleteAlbumById as jest.Mock;
+const getClientByUserIdMock = getClientByUserId as jest.Mock;
+const insertPhotosForAlbumMock = insertPhotosForAlbum as jest.Mock;
+const getPhotoByIdMock = getPhotoById as jest.Mock;
+const getAllPhotosForAlbumMock = getAllPhotosForAlbum as jest.Mock;
+const getAlbumOwnersForPhotoMock = getAlbumOwnersForPhoto as jest.Mock;
+const addPhotoToAlbumMock = addPhotoToAlbum as jest.Mock;
+const removePhotoFromAlbumMock = removePhotoFromAlbum as jest.Mock;
+const deletePhotosFromAlbumMock = deletePhotosFromAlbum as jest.Mock;
+const cacheGetMock = cache.get as jest.Mock;
+const cacheSetMock = cache.set as jest.Mock;
+const cacheDelMock = cache.del as jest.Mock;
+const photoQueueAddMock = photoQueue.add as jest.Mock;
+const renameMock = rename as jest.Mock;
 
 type Handler = (req: Request, res: Response, next: NextFunction) => Promise<void>;
 const createAlbum = createAlbumHandler as unknown as Handler;
@@ -167,13 +163,13 @@ const makeReq = (
 
 const makeRes = (): Response =>
   ({
-    status: vi.fn().mockReturnThis(),
-    json: vi.fn().mockReturnThis(),
-    send: vi.fn().mockReturnThis(),
+    status: jest.fn().mockReturnThis(),
+    json: jest.fn().mockReturnThis(),
+    send: jest.fn().mockReturnThis(),
   }) as unknown as Response;
 
 beforeEach(() => {
-  vi.clearAllMocks();
+  jest.clearAllMocks();
   // Default every test to a cache miss — tests that care about a hit
   // override this explicitly with cacheGetMock.mockResolvedValueOnce(...).
   cacheGetMock.mockResolvedValue(null);
@@ -191,7 +187,7 @@ describe('createAlbum', () => {
       body: { clientId: 'client-1', type: AlbumType.shoot, shootDate: '2026-01-01' },
     });
     const res = makeRes();
-    const next = vi.fn() as NextFunction;
+    const next = jest.fn() as NextFunction;
 
     await createAlbum(req, res, next);
 
@@ -216,7 +212,7 @@ describe('createAlbum', () => {
       body: { clientId: 'someone-elses-client', type: AlbumType.portfolio, shootDate: '2026-01-01' },
     });
     const res = makeRes();
-    const next = vi.fn() as NextFunction;
+    const next = jest.fn() as NextFunction;
 
     await createAlbum(req, res, next);
 
@@ -233,7 +229,7 @@ describe('createAlbum', () => {
       body: { type: AlbumType.shoot, shootDate: '2026-01-01' },
     });
     const res = makeRes();
-    const next = vi.fn() as NextFunction;
+    const next = jest.fn() as NextFunction;
 
     await createAlbum(req, res, next);
 
@@ -249,7 +245,7 @@ describe('createAlbum', () => {
       body: { clientId: 'client-1', type: AlbumType.shoot, shootDate: '2026-01-01' },
     });
     const res = makeRes();
-    const next = vi.fn() as NextFunction;
+    const next = jest.fn() as NextFunction;
 
     await createAlbum(req, res, next);
 
@@ -267,7 +263,7 @@ describe('createAlbum', () => {
       body: { clientId: 'client-1', type: AlbumType.shoot, shootDate: '2026-01-01' },
     });
     const res = makeRes();
-    const next = vi.fn() as NextFunction;
+    const next = jest.fn() as NextFunction;
 
     await createAlbum(req, res, next);
 
@@ -280,7 +276,7 @@ describe('getAlbumFromId', () => {
     getAlbumByIdMock.mockResolvedValue(null);
     const req = makeReq({ params: { id: 'missing-id' }, user: photographer });
     const res = makeRes();
-    const next = vi.fn() as NextFunction;
+    const next = jest.fn() as NextFunction;
 
     await getAlbumFromId(req, res, next);
 
@@ -291,7 +287,7 @@ describe('getAlbumFromId', () => {
     getAlbumByIdMock.mockResolvedValue(shootAlbum);
     const req = makeReq({ params: { id: 'album-1' }, user: photographer });
     const res = makeRes();
-    const next = vi.fn() as NextFunction;
+    const next = jest.fn() as NextFunction;
 
     await getAlbumFromId(req, res, next);
 
@@ -303,7 +299,7 @@ describe('getAlbumFromId', () => {
     cacheGetMock.mockResolvedValue(shootAlbum);
     const req = makeReq({ params: { id: 'album-1' }, user: photographer });
     const res = makeRes();
-    const next = vi.fn() as NextFunction;
+    const next = jest.fn() as NextFunction;
 
     await getAlbumFromId(req, res, next);
 
@@ -315,7 +311,7 @@ describe('getAlbumFromId', () => {
     getAlbumByIdMock.mockResolvedValue(shootAlbum);
     const req = makeReq({ params: { id: 'album-1' }, user: photographer });
     const res = makeRes();
-    const next = vi.fn() as NextFunction;
+    const next = jest.fn() as NextFunction;
 
     await getAlbumFromId(req, res, next);
 
@@ -327,7 +323,7 @@ describe('getAlbumFromId', () => {
     getAlbumByIdMock.mockResolvedValue(shootAlbum);
     const req = makeReq({ params: { id: 'album-1' }, user: client });
     const res = makeRes();
-    const next = vi.fn() as NextFunction;
+    const next = jest.fn() as NextFunction;
 
     await getAlbumFromId(req, res, next);
 
@@ -339,7 +335,7 @@ describe('getAlbumFromId', () => {
     getAlbumByIdMock.mockResolvedValue(shootAlbum);
     const req = makeReq({ params: { id: 'album-1' }, user: someoneElsePhotographer });
     const res = makeRes();
-    const next = vi.fn() as NextFunction;
+    const next = jest.fn() as NextFunction;
 
     await getAlbumFromId(req, res, next);
 
@@ -350,7 +346,7 @@ describe('getAlbumFromId', () => {
     getAlbumByIdMock.mockResolvedValue(shootAlbum);
     const req = makeReq({ params: { id: 'album-1' }, user: someoneElseClient });
     const res = makeRes();
-    const next = vi.fn() as NextFunction;
+    const next = jest.fn() as NextFunction;
 
     await getAlbumFromId(req, res, next);
 
@@ -361,7 +357,7 @@ describe('getAlbumFromId', () => {
     getAlbumByIdMock.mockResolvedValue(portfolioAlbum);
     const req = makeReq({ params: { id: 'album-2' }, user: client });
     const res = makeRes();
-    const next = vi.fn() as NextFunction;
+    const next = jest.fn() as NextFunction;
 
     await getAlbumFromId(req, res, next);
 
@@ -373,7 +369,7 @@ describe('getAlbumFromId', () => {
     getAlbumByIdMock.mockRejectedValue(dbError);
     const req = makeReq({ params: { id: 'album-1' }, user: photographer });
     const res = makeRes();
-    const next = vi.fn() as NextFunction;
+    const next = jest.fn() as NextFunction;
 
     await getAlbumFromId(req, res, next);
 
@@ -386,7 +382,7 @@ describe('updateAlbumFromId', () => {
     getAlbumByIdMock.mockResolvedValue(null);
     const req = makeReq({ params: { id: 'missing-id' }, user: photographer, body: {} });
     const res = makeRes();
-    const next = vi.fn() as NextFunction;
+    const next = jest.fn() as NextFunction;
 
     await updateAlbumFromId(req, res, next);
 
@@ -402,7 +398,7 @@ describe('updateAlbumFromId', () => {
       body: { thumbnailPhotoId: 'photo-2' },
     });
     const res = makeRes();
-    const next = vi.fn() as NextFunction;
+    const next = jest.fn() as NextFunction;
 
     await updateAlbumFromId(req, res, next);
 
@@ -421,7 +417,7 @@ describe('updateAlbumFromId', () => {
       body: { thumbnailPhotoId: 'photo-2' },
     });
     const res = makeRes();
-    const next = vi.fn() as NextFunction;
+    const next = jest.fn() as NextFunction;
 
     await updateAlbumFromId(req, res, next);
 
@@ -438,7 +434,7 @@ describe('updateAlbumFromId', () => {
     getAlbumByIdMock.mockRejectedValue(dbError);
     const req = makeReq({ params: { id: 'album-1' }, user: photographer, body: {} });
     const res = makeRes();
-    const next = vi.fn() as NextFunction;
+    const next = jest.fn() as NextFunction;
 
     await updateAlbumFromId(req, res, next);
 
@@ -451,7 +447,7 @@ describe('deleteAlbumFromId', () => {
     getAlbumByIdMock.mockResolvedValue(null);
     const req = makeReq({ params: { id: 'missing-id' }, user: photographer });
     const res = makeRes();
-    const next = vi.fn() as NextFunction;
+    const next = jest.fn() as NextFunction;
 
     await deleteAlbumFromId(req, res, next);
 
@@ -463,7 +459,7 @@ describe('deleteAlbumFromId', () => {
     getAlbumByIdMock.mockResolvedValue(shootAlbum);
     const req = makeReq({ params: { id: 'album-1' }, user: someoneElsePhotographer });
     const res = makeRes();
-    const next = vi.fn() as NextFunction;
+    const next = jest.fn() as NextFunction;
 
     await deleteAlbumFromId(req, res, next);
 
@@ -477,7 +473,7 @@ describe('deleteAlbumFromId', () => {
 
     const req = makeReq({ params: { id: 'album-1' }, user: photographer });
     const res = makeRes();
-    const next = vi.fn() as NextFunction;
+    const next = jest.fn() as NextFunction;
 
     await deleteAlbumFromId(req, res, next);
 
@@ -494,7 +490,7 @@ describe('deleteAlbumFromId', () => {
     getAlbumByIdMock.mockRejectedValue(dbError);
     const req = makeReq({ params: { id: 'album-1' }, user: photographer });
     const res = makeRes();
-    const next = vi.fn() as NextFunction;
+    const next = jest.fn() as NextFunction;
 
     await deleteAlbumFromId(req, res, next);
 
@@ -538,7 +534,7 @@ describe('createAlbumPhotosBatch', () => {
     getAlbumByIdMock.mockResolvedValue(null);
     const req = makeReq({ params: { id: 'missing-id' }, user: photographer, files: uploadedFiles });
     const res = makeRes();
-    const next = vi.fn() as NextFunction;
+    const next = jest.fn() as NextFunction;
 
     await createAlbumPhotosBatch(req, res, next);
 
@@ -554,7 +550,7 @@ describe('createAlbumPhotosBatch', () => {
       files: uploadedFiles,
     });
     const res = makeRes();
-    const next = vi.fn() as NextFunction;
+    const next = jest.fn() as NextFunction;
 
     await createAlbumPhotosBatch(req, res, next);
 
@@ -566,7 +562,7 @@ describe('createAlbumPhotosBatch', () => {
     getAlbumByIdMock.mockResolvedValue(shootAlbum);
     const req = makeReq({ params: { id: 'album-1' }, user: photographer });
     const res = makeRes();
-    const next = vi.fn() as NextFunction;
+    const next = jest.fn() as NextFunction;
 
     await createAlbumPhotosBatch(req, res, next);
 
@@ -578,7 +574,7 @@ describe('createAlbumPhotosBatch', () => {
     getAlbumByIdMock.mockResolvedValue(shootAlbum);
     const req = makeReq({ params: { id: 'album-1' }, user: photographer, files: [] });
     const res = makeRes();
-    const next = vi.fn() as NextFunction;
+    const next = jest.fn() as NextFunction;
 
     await createAlbumPhotosBatch(req, res, next);
 
@@ -592,7 +588,7 @@ describe('createAlbumPhotosBatch', () => {
 
     const req = makeReq({ params: { id: 'album-1' }, user: photographer, files: uploadedFiles });
     const res = makeRes();
-    const next = vi.fn() as NextFunction;
+    const next = jest.fn() as NextFunction;
 
     await createAlbumPhotosBatch(req, res, next);
 
@@ -629,7 +625,7 @@ describe('createAlbumPhotosBatch', () => {
 
     const req = makeReq({ params: { id: 'album-1' }, user: photographer, files: uploadedFiles });
     const res = makeRes();
-    const next = vi.fn() as NextFunction;
+    const next = jest.fn() as NextFunction;
 
     await createAlbumPhotosBatch(req, res, next);
 
@@ -647,7 +643,7 @@ describe('createAlbumPhotosBatch', () => {
 
     const req = makeReq({ params: { id: 'album-1' }, user: photographer, files: uploadedFiles });
     const res = makeRes();
-    const next = vi.fn() as NextFunction;
+    const next = jest.fn() as NextFunction;
 
     await createAlbumPhotosBatch(req, res, next);
 
@@ -664,7 +660,7 @@ describe('createAlbumPhotosBatch', () => {
 
     const req = makeReq({ params: { id: 'album-1' }, user: photographer, files: uploadedFiles });
     const res = makeRes();
-    const next = vi.fn() as NextFunction;
+    const next = jest.fn() as NextFunction;
 
     await createAlbumPhotosBatch(req, res, next);
 
@@ -678,7 +674,7 @@ describe('getAlbumPhotos', () => {
     getAlbumByIdMock.mockResolvedValue(null);
     const req = makeReq({ params: { id: 'missing-id' }, user: photographer });
     const res = makeRes();
-    const next = vi.fn() as NextFunction;
+    const next = jest.fn() as NextFunction;
 
     await getAlbumPhotos(req, res, next);
 
@@ -690,7 +686,7 @@ describe('getAlbumPhotos', () => {
     getAlbumByIdMock.mockResolvedValue(shootAlbum);
     const req = makeReq({ params: { id: 'album-1' }, user: someoneElsePhotographer });
     const res = makeRes();
-    const next = vi.fn() as NextFunction;
+    const next = jest.fn() as NextFunction;
 
     await getAlbumPhotos(req, res, next);
 
@@ -704,7 +700,7 @@ describe('getAlbumPhotos', () => {
 
     const req = makeReq({ params: { id: 'album-1' }, user: photographer });
     const res = makeRes();
-    const next = vi.fn() as NextFunction;
+    const next = jest.fn() as NextFunction;
 
     await getAlbumPhotos(req, res, next);
 
@@ -724,7 +720,7 @@ describe('getAlbumPhotos', () => {
 
     const req = makeReq({ params: { id: 'album-1' }, user: photographer });
     const res = makeRes();
-    const next = vi.fn() as NextFunction;
+    const next = jest.fn() as NextFunction;
 
     await getAlbumPhotos(req, res, next);
 
@@ -740,7 +736,7 @@ describe('getAlbumPhotos', () => {
 
     const req = makeReq({ params: { id: 'album-1' }, user: photographer });
     const res = makeRes();
-    const next = vi.fn() as NextFunction;
+    const next = jest.fn() as NextFunction;
 
     await getAlbumPhotos(req, res, next);
 
@@ -754,7 +750,7 @@ describe('getAlbumPhotos', () => {
 
     const req = makeReq({ params: { id: 'album-1' }, user: client });
     const res = makeRes();
-    const next = vi.fn() as NextFunction;
+    const next = jest.fn() as NextFunction;
 
     await getAlbumPhotos(req, res, next);
 
@@ -776,7 +772,7 @@ describe('getAlbumPhotos', () => {
       query: { page: '2', limit: '2' },
     });
     const res = makeRes();
-    const next = vi.fn() as NextFunction;
+    const next = jest.fn() as NextFunction;
 
     await getAlbumPhotos(req, res, next);
 
@@ -796,7 +792,7 @@ describe('getAlbumPhotos', () => {
       query: { limit: '10000' },
     });
     const res = makeRes();
-    const next = vi.fn() as NextFunction;
+    const next = jest.fn() as NextFunction;
 
     await getAlbumPhotos(req, res, next);
 
@@ -814,7 +810,7 @@ describe('getAlbumPhotos', () => {
 
       const req = makeReq({ params: { id: 'album-1' }, user: photographer, query: { page } });
       const res = makeRes();
-      const next = vi.fn() as NextFunction;
+      const next = jest.fn() as NextFunction;
 
       await getAlbumPhotos(req, res, next);
 
@@ -829,7 +825,7 @@ describe('getAlbumPhotos', () => {
 
     const req = makeReq({ params: { id: 'album-1' }, user: photographer });
     const res = makeRes();
-    const next = vi.fn() as NextFunction;
+    const next = jest.fn() as NextFunction;
 
     await getAlbumPhotos(req, res, next);
 
@@ -846,7 +842,7 @@ describe('deleteAlbumPhotosBatch', () => {
       body: { photoIds: ['photo-1'] },
     });
     const res = makeRes();
-    const next = vi.fn() as NextFunction;
+    const next = jest.fn() as NextFunction;
 
     await deleteAlbumPhotosBatch(req, res, next);
 
@@ -862,7 +858,7 @@ describe('deleteAlbumPhotosBatch', () => {
       body: { photoIds: ['photo-1'] },
     });
     const res = makeRes();
-    const next = vi.fn() as NextFunction;
+    const next = jest.fn() as NextFunction;
 
     await deleteAlbumPhotosBatch(req, res, next);
 
@@ -874,7 +870,7 @@ describe('deleteAlbumPhotosBatch', () => {
     getAlbumByIdMock.mockResolvedValue(shootAlbum);
     const req = makeReq({ params: { id: 'album-1' }, user: photographer, body: {} });
     const res = makeRes();
-    const next = vi.fn() as NextFunction;
+    const next = jest.fn() as NextFunction;
 
     await deleteAlbumPhotosBatch(req, res, next);
 
@@ -886,7 +882,7 @@ describe('deleteAlbumPhotosBatch', () => {
     getAlbumByIdMock.mockResolvedValue(shootAlbum);
     const req = makeReq({ params: { id: 'album-1' }, user: photographer, body: { photoIds: [] } });
     const res = makeRes();
-    const next = vi.fn() as NextFunction;
+    const next = jest.fn() as NextFunction;
 
     await deleteAlbumPhotosBatch(req, res, next);
 
@@ -904,7 +900,7 @@ describe('deleteAlbumPhotosBatch', () => {
       body: { photoIds: ['photo-1', 'photo-2'] },
     });
     const res = makeRes();
-    const next = vi.fn() as NextFunction;
+    const next = jest.fn() as NextFunction;
 
     await deleteAlbumPhotosBatch(req, res, next);
 
@@ -928,7 +924,7 @@ describe('deleteAlbumPhotosBatch', () => {
       body: { photoIds: ['photo-1'] },
     });
     const res = makeRes();
-    const next = vi.fn() as NextFunction;
+    const next = jest.fn() as NextFunction;
 
     await deleteAlbumPhotosBatch(req, res, next);
 
@@ -941,7 +937,7 @@ describe('addAlbumPhoto', () => {
     getAlbumByIdMock.mockResolvedValue(null);
     const req = makeReq({ params: { id: 'missing-id', photoId: 'photo-1' }, user: photographer });
     const res = makeRes();
-    const next = vi.fn() as NextFunction;
+    const next = jest.fn() as NextFunction;
 
     await addAlbumPhoto(req, res, next);
 
@@ -956,7 +952,7 @@ describe('addAlbumPhoto', () => {
       user: someoneElsePhotographer,
     });
     const res = makeRes();
-    const next = vi.fn() as NextFunction;
+    const next = jest.fn() as NextFunction;
 
     await addAlbumPhoto(req, res, next);
 
@@ -970,7 +966,7 @@ describe('addAlbumPhoto', () => {
 
     const req = makeReq({ params: { id: 'album-1', photoId: 'missing-photo' }, user: photographer });
     const res = makeRes();
-    const next = vi.fn() as NextFunction;
+    const next = jest.fn() as NextFunction;
 
     await addAlbumPhoto(req, res, next);
 
@@ -987,7 +983,7 @@ describe('addAlbumPhoto', () => {
 
     const req = makeReq({ params: { id: 'album-1', photoId: 'photo-1' }, user: photographer });
     const res = makeRes();
-    const next = vi.fn() as NextFunction;
+    const next = jest.fn() as NextFunction;
 
     await addAlbumPhoto(req, res, next);
 
@@ -1005,7 +1001,7 @@ describe('addAlbumPhoto', () => {
 
     const req = makeReq({ params: { id: 'album-1', photoId: 'photo-1' }, user: photographer });
     const res = makeRes();
-    const next = vi.fn() as NextFunction;
+    const next = jest.fn() as NextFunction;
 
     await addAlbumPhoto(req, res, next);
 
@@ -1027,7 +1023,7 @@ describe('addAlbumPhoto', () => {
 
     const req = makeReq({ params: { id: 'album-1', photoId: 'photo-1' }, user: photographer });
     const res = makeRes();
-    const next = vi.fn() as NextFunction;
+    const next = jest.fn() as NextFunction;
 
     await addAlbumPhoto(req, res, next);
 
@@ -1040,7 +1036,7 @@ describe('removeAlbumPhoto', () => {
     getAlbumByIdMock.mockResolvedValue(null);
     const req = makeReq({ params: { id: 'missing-id', photoId: 'photo-1' }, user: photographer });
     const res = makeRes();
-    const next = vi.fn() as NextFunction;
+    const next = jest.fn() as NextFunction;
 
     await removeAlbumPhoto(req, res, next);
 
@@ -1055,7 +1051,7 @@ describe('removeAlbumPhoto', () => {
       user: someoneElsePhotographer,
     });
     const res = makeRes();
-    const next = vi.fn() as NextFunction;
+    const next = jest.fn() as NextFunction;
 
     await removeAlbumPhoto(req, res, next);
 
@@ -1069,7 +1065,7 @@ describe('removeAlbumPhoto', () => {
 
     const req = makeReq({ params: { id: 'album-1', photoId: 'photo-1' }, user: photographer });
     const res = makeRes();
-    const next = vi.fn() as NextFunction;
+    const next = jest.fn() as NextFunction;
 
     await removeAlbumPhoto(req, res, next);
 
@@ -1089,7 +1085,7 @@ describe('removeAlbumPhoto', () => {
 
     const req = makeReq({ params: { id: 'album-1', photoId: 'photo-1' }, user: photographer });
     const res = makeRes();
-    const next = vi.fn() as NextFunction;
+    const next = jest.fn() as NextFunction;
 
     await removeAlbumPhoto(req, res, next);
 

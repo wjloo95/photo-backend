@@ -1,69 +1,70 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
-
 type Handler = (...args: unknown[]) => unknown;
 interface MockWorkerInstance {
-  on: ReturnType<typeof vi.fn>;
+  on: jest.Mock;
   handlers: Record<string, Handler>;
 }
-
-const { WorkerConstructorMock, QueueConstructorMock, workerInstances } = vi.hoisted(() => {
-  const workerInstances: MockWorkerInstance[] = [];
-
-  const WorkerConstructorMock = vi.fn(function Worker(
-    _queueName?: string,
-    _processor?: Handler,
-    _opts?: unknown,
-  ) {
-    const handlers: Record<string, Handler> = {};
-    const instance: MockWorkerInstance = {
-      handlers,
-      on: vi.fn((event: string, handler: Handler) => {
-        handlers[event] = handler;
-      }),
-    };
-    workerInstances.push(instance);
-    return instance;
-  });
-
-  const QueueConstructorMock = vi.fn(function Queue() {
-    return { add: vi.fn(), upsertJobScheduler: vi.fn() };
-  });
-
-  return { WorkerConstructorMock, QueueConstructorMock, workerInstances };
-});
 
 // Both photoQueue.ts and expiryQueue.ts construct a real Queue at import
 // time (worker.ts imports queue-name constants from both) — mocking
 // bullmq's Queue too keeps that harmless instead of attempting a real
 // Redis connection.
-vi.mock('bullmq', () => ({
-  Worker: WorkerConstructorMock,
-  Queue: QueueConstructorMock,
+jest.mock('bullmq', () => {
+  const WorkerConstructorMock = jest.fn(function Worker(
+    _queueName?: string,
+    _processor?: Handler,
+    _opts?: unknown,
+  ) {
+    const handlers: Record<string, Handler> = {};
+    return {
+      handlers,
+      on: jest.fn((event: string, handler: Handler) => {
+        handlers[event] = handler;
+      }),
+    };
+  });
+
+  const QueueConstructorMock = jest.fn(function Queue() {
+    return { add: jest.fn(), upsertJobScheduler: jest.fn() };
+  });
+
+  return { Worker: WorkerConstructorMock, Queue: QueueConstructorMock };
+});
+
+jest.mock('../processors/photoProcessor', () => ({
+  processPhotoBatch: jest.fn(),
 }));
 
-const { processPhotoBatchMock } = vi.hoisted(() => ({ processPhotoBatchMock: vi.fn() }));
-vi.mock('../processors/photoProcessor', () => ({
-  processPhotoBatch: processPhotoBatchMock,
+jest.mock('../processors/expiryProcessor', () => ({
+  processExpiryJob: jest.fn(),
 }));
 
-const { processExpiryJobMock } = vi.hoisted(() => ({ processExpiryJobMock: vi.fn() }));
-vi.mock('../processors/expiryProcessor', () => ({
-  processExpiryJob: processExpiryJobMock,
+jest.mock('../schedulers/expiryScheduler', () => ({
+  registerExpirySchedules: jest.fn(() => Promise.resolve()),
 }));
 
-const { registerExpirySchedulesMock } = vi.hoisted(() => ({
-  registerExpirySchedulesMock: vi.fn(() => Promise.resolve()),
-}));
-vi.mock('../schedulers/expiryScheduler', () => ({
-  registerExpirySchedules: registerExpirySchedulesMock,
-}));
-
+import { Worker } from 'bullmq';
 import { PHOTO_QUEUE_NAME, PhotoJobName } from '../queues/photoQueue';
 import { EXPIRY_QUEUE_NAME } from '../queues/expiryQueue';
+import { processPhotoBatch } from '../processors/photoProcessor';
+import { processExpiryJob } from '../processors/expiryProcessor';
+import { registerExpirySchedules } from '../schedulers/expiryScheduler';
 // Importing this module runs its top-level side effects (constructing both
 // Workers, registering their listeners, calling registerExpirySchedules)
 // exactly once, here.
 import '../worker';
+
+const WorkerConstructorMock = Worker as unknown as jest.Mock;
+const processPhotoBatchMock = processPhotoBatch as jest.Mock;
+const processExpiryJobMock = processExpiryJob as jest.Mock;
+const registerExpirySchedulesMock = registerExpirySchedules as jest.Mock;
+
+// worker.ts constructs the photo Worker before the expiry Worker, so those
+// are the 1st/2nd calls to the (shared) Worker constructor mock, in order —
+// and jest's mock.results captures each call's return value in the same
+// order, standing in for the vi.hoisted `workerInstances` array.
+const workerInstances = WorkerConstructorMock.mock.results.map(
+  (result) => result.value as MockWorkerInstance,
+);
 
 // worker.ts constructs the photo Worker before the expiry Worker, so those
 // are the 1st/2nd calls to the (shared) Worker constructor mock, in order.
@@ -86,7 +87,7 @@ function getExpiryWorkerProcessor() {
 beforeEach(() => {
   processPhotoBatchMock.mockReset();
   processExpiryJobMock.mockReset();
-  vi.spyOn(console, 'error').mockImplementation(() => undefined);
+  jest.spyOn(console, 'error').mockImplementation(() => undefined);
 });
 
 describe('worker.ts — module setup', () => {

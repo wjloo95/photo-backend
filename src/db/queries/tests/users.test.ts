@@ -1,4 +1,15 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+jest.mock('../../../config/database', () => {
+  const mockClient = {
+    query: jest.fn(),
+    release: jest.fn(),
+  };
+  const mockConnect = jest.fn(() => Promise.resolve(mockClient));
+  (mockConnect as unknown as { __mockClient: typeof mockClient }).__mockClient = mockClient;
+  return {
+    pool: { connect: mockConnect, query: jest.fn() },
+  };
+});
+
 import {
   AcceptInviteInput,
   insertClientFromInvite,
@@ -7,32 +18,23 @@ import {
   updateUserById,
 } from '../users';
 import { InviteStatus, User, UserRole } from '../../../types';
+import { pool } from '../../../config/database';
 
-const { mockClient, mockConnect, mockQuery } = vi.hoisted(() => {
-  const mockClient = {
-    query: vi.fn(),
-    release: vi.fn(),
-  };
-  return {
-    mockClient,
-    mockConnect: vi.fn(() => Promise.resolve(mockClient)),
-    mockQuery: vi.fn(),
-  };
-});
-
-vi.mock('../../../config/database', () => ({
-  pool: { connect: mockConnect, query: mockQuery },
-}));
+const mockConnect = pool.connect as jest.Mock;
+const mockQuery = pool.query as jest.Mock;
+const mockClient = (mockConnect as unknown as {
+  __mockClient: { query: jest.Mock; release: jest.Mock };
+}).__mockClient;
 
 beforeEach(() => {
-  vi.clearAllMocks();
+  jest.clearAllMocks();
   mockConnect.mockImplementation(() => Promise.resolve(mockClient));
-  vi.useFakeTimers();
-  vi.setSystemTime(new Date('2026-08-27T00:00:00Z'));
+  jest.useFakeTimers();
+  jest.setSystemTime(new Date('2026-08-27T00:00:00Z'));
 });
 
 afterEach(() => {
-  vi.useRealTimers();
+  jest.useRealTimers();
 });
 
 const clientInput: InsertUserFromWebhookInput = {

@@ -1,4 +1,3 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { Request, Response, NextFunction } from 'express';
 import { errorHandler } from '../errorHandler';
 import { AppError } from '../../types/AppError';
@@ -6,16 +5,16 @@ import { AppError } from '../../types/AppError';
 const makeRes = (headersSent = false) =>
   ({
     headersSent,
-    status: vi.fn().mockReturnThis(),
-    json: vi.fn().mockReturnThis(),
+    status: jest.fn().mockReturnThis(),
+    json: jest.fn().mockReturnThis(),
   }) as unknown as Response;
 
 const req = {} as Request;
-const next = vi.fn() as NextFunction;
+const next = jest.fn() as NextFunction;
 
 beforeEach(() => {
-  vi.spyOn(console, 'warn').mockImplementation(() => {});
-  vi.spyOn(console, 'error').mockImplementation(() => {});
+  jest.spyOn(console, 'warn').mockImplementation(() => {});
+  jest.spyOn(console, 'error').mockImplementation(() => {});
 });
 
 describe('errorHandler — headers already sent', () => {

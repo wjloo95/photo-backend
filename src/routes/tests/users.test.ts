@@ -1,27 +1,21 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { Request, Response, NextFunction } from 'express';
 import crypto from 'node:crypto';
 import { User, UserRole } from '../../types';
 
-vi.mock('../../config/env', () => ({
+jest.mock('../../config/env', () => ({
   env: { AUTH0_WEBHOOK_SECRET: 'test-webhook-secret' },
 }));
 
-const { insertUserFromWebhookMock, insertClientFromInviteMock, updateUserByIdMock } = vi.hoisted(() => ({
-  insertUserFromWebhookMock: vi.fn(),
-  insertClientFromInviteMock: vi.fn(),
-  updateUserByIdMock: vi.fn(),
-}));
-vi.mock('../../db/queries/users', () => ({
-  insertUserFromWebhook: insertUserFromWebhookMock,
-  insertClientFromInvite: insertClientFromInviteMock,
-  updateUserById: updateUserByIdMock,
+jest.mock('../../db/queries/users', () => ({
+  insertUserFromWebhook: jest.fn(),
+  insertClientFromInvite: jest.fn(),
+  updateUserById: jest.fn(),
 }));
 
 // auth/loadUser are applied directly on the PATCH route (this router is
 // mounted before the global auth chain in app.ts) — stub them as pass-through
 // so the handler test can drive req.user itself.
-vi.mock('../../middleware/auth', () => ({
+jest.mock('../../middleware/auth', () => ({
   auth: (_req: Request, _res: Response, next: NextFunction) => next(),
   loadUser: (_req: Request, _res: Response, next: NextFunction) => next(),
 }));
@@ -31,6 +25,11 @@ import {
   createUserFromWebhook as createUserFromWebhookHandler,
   updateUserFromId as updateUserFromIdHandler,
 } from '../users';
+import { insertUserFromWebhook, insertClientFromInvite, updateUserById } from '../../db/queries/users';
+
+const insertUserFromWebhookMock = insertUserFromWebhook as jest.Mock;
+const insertClientFromInviteMock = insertClientFromInvite as jest.Mock;
+const updateUserByIdMock = updateUserById as jest.Mock;
 
 // RequestHandler's type signature says it returns void, but the actual
 // implementation is async — cast so tests can await it.
@@ -76,8 +75,8 @@ describe('verifyWebhookSignature', () => {
 describe('createUserFromWebhook', () => {
   const makeRes = (): Response =>
     ({
-      status: vi.fn().mockReturnThis(),
-      json: vi.fn().mockReturnThis(),
+      status: jest.fn().mockReturnThis(),
+      json: jest.fn().mockReturnThis(),
     }) as unknown as Response;
 
   beforeEach(() => {
@@ -88,7 +87,7 @@ describe('createUserFromWebhook', () => {
   it('responds 401 and does not call insertUserFromWebhook when the signature is invalid', async () => {
     const req = makeReq({ email: 'a@example.com' }, { badSignature: true });
     const res = makeRes();
-    const next = vi.fn() as NextFunction;
+    const next = jest.fn() as NextFunction;
 
     await createUserFromWebhook(req, res, next);
 
@@ -105,7 +104,7 @@ describe('createUserFromWebhook', () => {
 
     const req = makeReq(payload);
     const res = makeRes();
-    const next = vi.fn() as NextFunction;
+    const next = jest.fn() as NextFunction;
 
     await createUserFromWebhook(req, res, next);
 
@@ -122,7 +121,7 @@ describe('createUserFromWebhook', () => {
 
     const req = makeReq(payload);
     const res = makeRes();
-    const next = vi.fn() as NextFunction;
+    const next = jest.fn() as NextFunction;
 
     await createUserFromWebhook(req, res, next);
 
@@ -152,7 +151,7 @@ describe('createUserFromWebhook', () => {
 
     const req = makeReq(payload);
     const res = makeRes();
-    const next = vi.fn() as NextFunction;
+    const next = jest.fn() as NextFunction;
 
     await createUserFromWebhook(req, res, next);
 
@@ -180,7 +179,7 @@ describe('createUserFromWebhook', () => {
 
     const req = makeReq(payload);
     const res = makeRes();
-    const next = vi.fn() as NextFunction;
+    const next = jest.fn() as NextFunction;
 
     await createUserFromWebhook(req, res, next);
 
@@ -192,8 +191,8 @@ describe('createUserFromWebhook', () => {
 describe('updateUserFromId', () => {
   const makeRes = (): Response =>
     ({
-      status: vi.fn().mockReturnThis(),
-      json: vi.fn().mockReturnThis(),
+      status: jest.fn().mockReturnThis(),
+      json: jest.fn().mockReturnThis(),
     }) as unknown as Response;
 
   const makeReq = (opts: { params?: object; user?: User; body?: object } = {}): Request =>
@@ -219,7 +218,7 @@ describe('updateUserFromId', () => {
       body: { name: 'New Name' },
     });
     const res = makeRes();
-    const next = vi.fn() as NextFunction;
+    const next = jest.fn() as NextFunction;
 
     await updateUserFromId(req, res, next);
 
@@ -236,7 +235,7 @@ describe('updateUserFromId', () => {
       body: { email: 'new@example.com', name: 'New Name' },
     });
     const res = makeRes();
-    const next = vi.fn() as NextFunction;
+    const next = jest.fn() as NextFunction;
 
     await updateUserFromId(req, res, next);
 
@@ -252,7 +251,7 @@ describe('updateUserFromId', () => {
     updateUserByIdMock.mockResolvedValue(null);
     const req = makeReq({ params: { id: 'user-1' }, user: owner, body: { name: 'New Name' } });
     const res = makeRes();
-    const next = vi.fn() as NextFunction;
+    const next = jest.fn() as NextFunction;
 
     await updateUserFromId(req, res, next);
 
@@ -265,7 +264,7 @@ describe('updateUserFromId', () => {
     updateUserByIdMock.mockRejectedValue(dbError);
     const req = makeReq({ params: { id: 'user-1' }, user: owner, body: { name: 'New Name' } });
     const res = makeRes();
-    const next = vi.fn() as NextFunction;
+    const next = jest.fn() as NextFunction;
 
     await updateUserFromId(req, res, next);
 

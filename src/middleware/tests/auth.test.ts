@@ -1,4 +1,3 @@
-import { describe, it, expect, vi, beforeAll, beforeEach } from 'vitest';
 import type { Request, Response, NextFunction } from 'express';
 import jwt from 'jsonwebtoken';
 import { generateKeyPairSync } from 'node:crypto';
@@ -15,28 +14,39 @@ const generateRsaKeyPair = (): { publicKey: string; privateKey: string } =>
 // jsonwebtoken verification logic against tokens we sign with `privateKey`;
 // only the JWKS network lookup (jwks-rsa) is stubbed, so failure states
 // (missing/expired/wrong-audience/wrong-signature tokens) are exercised for real.
-const { publicKey, privateKey } = vi.hoisted(() => {
-  // vi.hoisted runs before static imports are bound, so `generateKeyPairSync` must be pulled in lazily here.
+//
+// jest.mock factories are hoisted above imports/consts, so they can't reference
+// outer-scope variables (that would be a TDZ ReferenceError at runtime). The key
+// pair is therefore generated fully inside the factory, and the private key is
+// re-exported off the mocked module so the rest of this file can sign tokens
+// against the same key the mock hands back for verification.
+jest.mock('jwks-rsa', () => {
   // eslint-disable-next-line @typescript-eslint/no-require-imports
   const crypto = require('node:crypto') as typeof import('node:crypto');
-  return crypto.generateKeyPairSync('rsa', {
+  const { publicKey, privateKey } = crypto.generateKeyPairSync('rsa', {
     modulusLength: 2048,
     publicKeyEncoding: { type: 'spki', format: 'pem' },
     privateKeyEncoding: { type: 'pkcs8', format: 'pem' },
   });
+  return {
+    __esModule: true,
+    default: {
+      // express-jwt v8 calls `secret` as `(req, token) => Promise<key>`.
+      expressJwtSecret: () => async () => publicKey,
+    },
+    __testPrivateKey: privateKey,
+  };
 });
 
-vi.mock('jwks-rsa', () => ({
-  default: {
-    // express-jwt v8 calls `secret` as `(req, token) => Promise<key>`.
-    expressJwtSecret: () => async () => publicKey,
-  },
+jest.mock('../../db/queries/users', () => ({
+  getUserByProviderId: jest.fn(),
 }));
 
-const getUserByProviderIdMock = vi.fn();
-vi.mock('../../db/queries/users', () => ({
-  getUserByProviderId: getUserByProviderIdMock,
-}));
+import * as jwksRsaModule from 'jwks-rsa';
+import { getUserByProviderId } from '../../db/queries/users';
+
+const getUserByProviderIdMock = getUserByProviderId as jest.Mock;
+const privateKey = (jwksRsaModule as unknown as { __testPrivateKey: string }).__testPrivateKey;
 
 process.env.AUTH0_DOMAIN = 'test-tenant.auth0.com';
 process.env.AUTH0_AUDIENCE = 'https://api.test.local';
@@ -129,8 +139,8 @@ describe('loadUser — attaches the DB user to req.user', () => {
   const makeLoadUserReq = (sub: string): Request => ({ auth: { sub } }) as unknown as Request;
   const makeRes = (): Response =>
     ({
-      status: vi.fn().mockReturnThis(),
-      json: vi.fn().mockReturnThis(),
+      status: jest.fn().mockReturnThis(),
+      json: jest.fn().mockReturnThis(),
     }) as unknown as Response;
 
   beforeEach(() => {
@@ -150,7 +160,7 @@ describe('loadUser — attaches the DB user to req.user', () => {
 
     const req = makeLoadUserReq('auth0|abc123');
     const res = makeRes();
-    const next = vi.fn() as NextFunction;
+    const next = jest.fn() as NextFunction;
 
     await loadUser(req, res, next);
 
@@ -165,12 +175,12 @@ describe('loadUser — attaches the DB user to req.user', () => {
 
     const req = makeLoadUserReq('auth0|unknown');
     const res = makeRes();
-    const next = vi.fn() as NextFunction;
+    const next = jest.fn() as NextFunction;
 
     await loadUser(req, res, next);
 
     expect(next).toHaveBeenCalledTimes(1);
-    const err = (next as ReturnType<typeof vi.fn>).mock.calls[0][0] as { status?: number; message?: string };
+    const err = (next as ReturnType<typeof jest.fn>).mock.calls[0][0] as { status?: number; message?: string };
     expect(err.status).toBe(401);
     expect(err.message).toBe('User not found');
     expect(req.user).toBeUndefined();

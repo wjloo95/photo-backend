@@ -32,6 +32,7 @@ import photographersRouter from './routes/photographers';
 import invitesRouter from './routes/invites';
 import albumsRouter from './routes/albums';
 import photosRouter from './routes/photos';
+import conversationsRouter from './routes/conversations';
 
 const app = express();
 
@@ -87,6 +88,7 @@ app.use(loadUser);
 app.use('/photographers', photographersRouter);
 app.use('/albums', albumsRouter);
 app.use('/photos', photosRouter);
+app.use('/conversations', conversationsRouter);
 
 // TODO: remove before shipping — triggers errorHandler with different error shapes
 app.get('/test-error', (_req, _res, next) => {

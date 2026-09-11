@@ -1,4 +1,3 @@
-import { describe, it, expect, vi } from 'vitest';
 import type { Request, Response, NextFunction } from 'express';
 import { requireRole } from '../requireRole';
 import { User, UserRole } from '../../types';
@@ -18,7 +17,7 @@ const res = {} as Response;
 describe('requireRole', () => {
   it('calls next() with no error when req.user.role matches the required role', () => {
     const req = makeReq(makeUser(UserRole.photographer));
-    const next = vi.fn() as NextFunction;
+    const next = jest.fn() as NextFunction;
 
     requireRole(UserRole.photographer)(req, res, next);
 
@@ -27,24 +26,24 @@ describe('requireRole', () => {
 
   it('calls next(err) with a 403 when req.user.role does not match the required role', () => {
     const req = makeReq(makeUser(UserRole.client));
-    const next = vi.fn() as NextFunction;
+    const next = jest.fn() as NextFunction;
 
     requireRole(UserRole.photographer)(req, res, next);
 
     expect(next).toHaveBeenCalledTimes(1);
-    const err = (next as ReturnType<typeof vi.fn>).mock.calls[0][0] as { status?: number; message?: string };
+    const err = (next as ReturnType<typeof jest.fn>).mock.calls[0][0] as { status?: number; message?: string };
     expect(err.status).toBe(403);
     expect(err.message).toBe('Forbidden');
   });
 
   it('calls next(err) with a 403 when req.user is not set', () => {
     const req = makeReq(undefined);
-    const next = vi.fn() as NextFunction;
+    const next = jest.fn() as NextFunction;
 
     requireRole(UserRole.client)(req, res, next);
 
     expect(next).toHaveBeenCalledTimes(1);
-    const err = (next as ReturnType<typeof vi.fn>).mock.calls[0][0] as { status?: number };
+    const err = (next as ReturnType<typeof jest.fn>).mock.calls[0][0] as { status?: number };
     expect(err.status).toBe(403);
   });
 });

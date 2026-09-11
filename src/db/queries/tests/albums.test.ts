@@ -1,4 +1,7 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+jest.mock('../../../config/database', () => ({
+  pool: { query: jest.fn() },
+}));
+
 import {
   getPhotographerAlbumsByUserId,
   insertAlbum,
@@ -6,7 +9,10 @@ import {
   updateAlbumById,
   deleteAlbumById,
 } from '../albums';
+import { pool } from '../../../config/database';
 import { AlbumType } from '../../../types';
+
+const mockQuery = pool.query as jest.Mock;
 
 const fullAlbumRow = {
   id: 'album-1',
@@ -35,11 +41,6 @@ const fullAlbum = {
   warned7At: null,
   createdAt: new Date('2026-01-01T00:00:00Z'),
 };
-
-const { mockQuery } = vi.hoisted(() => ({ mockQuery: vi.fn() }));
-vi.mock('../../../config/database', () => ({
-  pool: { query: mockQuery },
-}));
 
 beforeEach(() => {
   mockQuery.mockReset();

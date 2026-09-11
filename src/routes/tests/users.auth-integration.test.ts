@@ -1,4 +1,3 @@
-import { describe, it, expect, vi, beforeAll } from 'vitest';
 import type { Request, Response, NextFunction, Router } from 'express';
 import jwt from 'jsonwebtoken';
 import { generateKeyPairSync } from 'node:crypto';
@@ -13,35 +12,40 @@ import { User, UserRole } from '../../types';
 // protected because it applies auth/loadUser directly — nothing upstream
 // of the router enforces it.
 
-vi.mock('../../config/env', () => ({
+jest.mock('../../config/env', () => ({
   env: { AUTH0_WEBHOOK_SECRET: 'test-webhook-secret' },
 }));
 
-const { publicKey, privateKey } = vi.hoisted(() => {
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
-  const crypto = require('node:crypto') as typeof import('node:crypto');
-  return crypto.generateKeyPairSync('rsa', {
-    modulusLength: 2048,
-    publicKeyEncoding: { type: 'spki', format: 'pem' },
-    privateKeyEncoding: { type: 'pkcs8', format: 'pem' },
-  });
+// NOTE: unlike the vi.hoisted version, this plain const is safe here (not
+// wrapped in the mock factory) because `../users` — which transitively
+// requires 'jwks-rsa' — is only ever loaded via a *dynamic* import() inside
+// beforeAll below, never a static top-level import. By the time that dynamic
+// import runs (after all module-level code, including this assignment, has
+// executed), publicKey/privateKey are already populated, so the jwks-rsa
+// mock factory's closure over `publicKey` sees a real value, not TDZ.
+const { publicKey, privateKey } = generateKeyPairSync('rsa', {
+  modulusLength: 2048,
+  publicKeyEncoding: { type: 'spki', format: 'pem' },
+  privateKeyEncoding: { type: 'pkcs8', format: 'pem' },
 });
 
-vi.mock('jwks-rsa', () => ({
+jest.mock('jwks-rsa', () => ({
+  __esModule: true,
   default: {
     expressJwtSecret: () => async () => publicKey,
   },
 }));
 
-const { getUserByProviderIdMock, updateUserByIdMock } = vi.hoisted(() => ({
-  getUserByProviderIdMock: vi.fn(),
-  updateUserByIdMock: vi.fn(),
+jest.mock('../../db/queries/users', () => ({
+  getUserByProviderId: jest.fn(),
+  updateUserById: jest.fn(),
+  insertUserFromWebhook: jest.fn(),
 }));
-vi.mock('../../db/queries/users', () => ({
-  getUserByProviderId: getUserByProviderIdMock,
-  updateUserById: updateUserByIdMock,
-  insertUserFromWebhook: vi.fn(),
-}));
+
+import { getUserByProviderId, updateUserById } from '../../db/queries/users';
+
+const getUserByProviderIdMock = getUserByProviderId as jest.Mock;
+const updateUserByIdMock = updateUserById as jest.Mock;
 
 process.env.AUTH0_DOMAIN = 'test-tenant.auth0.com';
 process.env.AUTH0_AUDIENCE = 'https://api.test.local';
@@ -63,8 +67,8 @@ const makeReq = (authorization?: string, params: object = { id: 'user-1' }): Req
 
 const makeRes = (): Response =>
   ({
-    status: vi.fn().mockReturnThis(),
-    json: vi.fn().mockReturnThis(),
+    status: jest.fn().mockReturnThis(),
+    json: jest.fn().mockReturnThis(),
   }) as unknown as Response;
 
 // Pulls the middleware chain registered for PATCH /:id off the real router
@@ -87,8 +91,8 @@ const runPatchChain = (req: Request, res: Response): Promise<{ err?: { status?: 
       settled = true;
       resolve({ err: err as { status?: number } | undefined });
     };
-    (res.json as ReturnType<typeof vi.fn>).mockImplementation(() => finish());
-    (res.status as ReturnType<typeof vi.fn>).mockImplementation(() => res);
+    (res.json as ReturnType<typeof jest.fn>).mockImplementation(() => finish());
+    (res.status as ReturnType<typeof jest.fn>).mockImplementation(() => res);
 
     let i = 0;
     const next = (err?: unknown) => {
