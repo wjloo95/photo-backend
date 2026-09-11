@@ -7,6 +7,7 @@
  * See src/config/README.md for why ioredis is used over the official redis package.
  */
 
+/* eslint-disable no-console */
 import Redis from 'ioredis';
 import { env } from './env';
 

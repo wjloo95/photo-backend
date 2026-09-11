@@ -12,6 +12,7 @@
  * See src/config/README.md for a full explanation.
  */
 
+/* eslint-disable no-console */
 import { z } from 'zod';
 
 const envSchema = z.object({

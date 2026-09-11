@@ -54,9 +54,8 @@ app.get('/health', (_req, res) => {
 
 // TODO: remove before shipping — triggers errorHandler with different error shapes
 app.get('/test-error', (_req, _res, next) => {
-  const err: any = new Error('something went wrong')
-  err.status = 422
-  next(err)
+  const err = Object.assign(new Error('something went wrong'), { status: 422 });
+  next(err);
 })
 
 app.use(errorHandler);

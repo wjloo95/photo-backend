@@ -11,6 +11,7 @@
  * See README.md in this folder for a full explanation of how migrations work.
  */
 
+/* eslint-disable no-console */
 import { readdir, readFile } from 'fs/promises';
 import path from 'path';
 import { Pool } from 'pg';
@@ -28,7 +29,7 @@ if (!DATABASE_URL) {
 
 const pool = new Pool({ connectionString: DATABASE_URL });
 
-async function migrate() {
+async function migrate(): Promise<void> {
   const client = await pool.connect();
 
   try {

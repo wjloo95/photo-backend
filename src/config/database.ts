@@ -8,6 +8,7 @@
  * See src/config/README.md for an explanation of Pool vs Client.
  */
 
+/* eslint-disable no-console */
 import { Pool } from 'pg';
 import { env } from './env';
 

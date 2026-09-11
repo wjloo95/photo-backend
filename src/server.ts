@@ -6,6 +6,7 @@
  * Run with: npm run dev
  */
 
+/* eslint-disable no-console */
 import * as dotenv from 'dotenv';
 dotenv.config(); // Must be first — loads .env before any other import reads process.env
 
@@ -14,7 +15,7 @@ import { env } from './config/env';
 import { pool } from './config/database';
 import { redis } from './config/redis';
 
-async function start() {
+async function start(): Promise<void> {
   // Verify database connectivity before accepting traffic.
   // If DATABASE_URL is wrong or Postgres is not running, fail fast here
   // rather than on the first request.
@@ -37,4 +38,4 @@ async function start() {
   });
 }
 
-start();
+void start();
