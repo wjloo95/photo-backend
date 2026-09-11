@@ -31,7 +31,20 @@ jest.mock('../../cache', () => ({
   default: { get: jest.fn(), set: jest.fn(), del: jest.fn() },
 }));
 
+jest.mock('cloudinary', () => ({
+  v2: {
+    config: jest.fn(),
+    uploader: { upload: jest.fn() },
+  },
+}));
+
+jest.mock('node:fs/promises', () => {
+  const unlinkMock = jest.fn().mockResolvedValue(undefined);
+  return { __esModule: true, default: { unlink: unlinkMock }, unlink: unlinkMock };
+});
+
 import {
+  uploadPhotographerPhoto as uploadPhotographerPhotoHandler,
   getPhotographerFromId as getPhotographerFromIdHandler,
   getPhotographerClientsFromId as getPhotographerClientsFromIdHandler,
   getPhotographerAlbumsFromId as getPhotographerAlbumsFromIdHandler,
@@ -48,6 +61,8 @@ import { getPhotographerAlbumsByUserId } from '../../db/queries/albums';
 import { getPendingInvitesByPhotographerId } from '../../db/queries/invites';
 import { getTemplatesByPhotographerId } from '../../db/queries/templates';
 import cache from '../../cache';
+import { v2 as cloudinary } from 'cloudinary';
+import fs from 'node:fs/promises';
 
 const getPhotographerByUserIdMock = getPhotographerByUserId as jest.Mock;
 const updatePhotographerByUserIdMock = updatePhotographerByUserId as jest.Mock;
@@ -58,6 +73,8 @@ const getTemplatesByPhotographerIdMock = getTemplatesByPhotographerId as jest.Mo
 const cacheGetMock = cache.get as jest.Mock;
 const cacheSetMock = cache.set as jest.Mock;
 const cacheDelMock = cache.del as jest.Mock;
+const uploadMock = cloudinary.uploader.upload as jest.Mock;
+const unlinkMock = fs.unlink as unknown as jest.Mock;
 
 // RequestHandler's type signature says it returns void, but the actual
 // implementation is async — cast so tests can await it.
@@ -68,6 +85,7 @@ const getPhotographerAlbumsFromId = getPhotographerAlbumsFromIdHandler as unknow
 const getPhotographerInvitesFromId = getPhotographerInvitesFromIdHandler as unknown as Handler;
 const getPhotographerTemplatesFromId = getPhotographerTemplatesFromIdHandler as unknown as Handler;
 const updatePhotographerFromId = updatePhotographerFromIdHandler as unknown as Handler;
+const uploadPhotographerPhoto = uploadPhotographerPhotoHandler as unknown as Handler;
 
 const makeRes = (): Response =>
   ({
@@ -551,5 +569,113 @@ describe('updatePhotographerFromId', () => {
     await updatePhotographerFromId(req, res, next);
 
     expect(next).toHaveBeenCalledWith(dbError);
+  });
+});
+
+describe('uploadPhotographerPhoto', () => {
+  const file = { path: '/tmp/sys-photo-uploads/abc123' };
+
+  const uploadReq = (opts: { id?: string; user?: User; file?: unknown } = {}): Request =>
+    ({
+      params: { id: opts.id ?? 'photog-1' },
+      user: 'user' in opts ? opts.user : owner,
+      body: {},
+      file: 'file' in opts ? opts.file : file,
+    }) as unknown as Request;
+
+  it('uploads the file, saves the URL, and responds 200 with the photographer', async () => {
+    uploadMock.mockResolvedValue({ secure_url: 'https://cdn.example/photog-1.jpg' });
+    updatePhotographerByUserIdMock.mockResolvedValue(photographer);
+    const res = makeRes();
+    const next = jest.fn() as NextFunction;
+
+    await uploadPhotographerPhoto(uploadReq(), res, next);
+
+    expect(uploadMock).toHaveBeenCalledWith(file.path, expect.any(Object));
+    expect(updatePhotographerByUserIdMock).toHaveBeenCalledWith('photog-1', {
+      profilePhotoUrl: 'https://cdn.example/photog-1.jpg',
+    });
+    expect(res.status).toHaveBeenCalledWith(200);
+    expect(res.json).toHaveBeenCalledWith(photographer);
+    expect(next).not.toHaveBeenCalled();
+  });
+
+  // A deterministic public_id means re-uploading replaces the same Cloudinary
+  // asset instead of orphaning the previous one — no column tracking the old
+  // id, no cleanup job, and a retry after a failed DB write is idempotent.
+  it('overwrites a deterministic public_id rather than creating a new asset', async () => {
+    uploadMock.mockResolvedValue({ secure_url: 'https://cdn.example/x.jpg' });
+    updatePhotographerByUserIdMock.mockResolvedValue(photographer);
+
+    await uploadPhotographerPhoto(uploadReq(), makeRes(), jest.fn() as NextFunction);
+
+    const [, options] = uploadMock.mock.calls[0];
+    expect(options).toMatchObject({
+      public_id: 'photographers/photog-1/profile',
+      overwrite: true,
+      invalidate: true,
+    });
+  });
+
+  // The profile is cached for an hour (D-15) — without this the photographer
+  // keeps seeing their old avatar for up to 60 minutes.
+  it('invalidates the cached profile', async () => {
+    uploadMock.mockResolvedValue({ secure_url: 'https://cdn.example/x.jpg' });
+    updatePhotographerByUserIdMock.mockResolvedValue(photographer);
+
+    await uploadPhotographerPhoto(uploadReq(), makeRes(), jest.fn() as NextFunction);
+
+    expect(cacheDelMock).toHaveBeenCalledWith('photographer:profile:photog-1');
+  });
+
+  it("responds 403 when uploading to another photographer's profile", async () => {
+    const next = jest.fn() as NextFunction;
+
+    await uploadPhotographerPhoto(uploadReq({ id: 'photog-2' }), makeRes(), next);
+
+    expect(next).toHaveBeenCalledWith(expect.objectContaining({ status: 403 }));
+    expect(uploadMock).not.toHaveBeenCalled();
+  });
+
+  // multer leaves req.file undefined both when nothing was sent and when
+  // fileFilter rejected a non-image.
+  it('responds 400 when no usable file was uploaded', async () => {
+    const next = jest.fn() as NextFunction;
+
+    await uploadPhotographerPhoto(uploadReq({ file: undefined }), makeRes(), next);
+
+    expect(next).toHaveBeenCalledWith(expect.objectContaining({ status: 400 }));
+    expect(uploadMock).not.toHaveBeenCalled();
+  });
+
+  it('responds 404 when the photographer row does not exist', async () => {
+    uploadMock.mockResolvedValue({ secure_url: 'https://cdn.example/x.jpg' });
+    updatePhotographerByUserIdMock.mockResolvedValue(null);
+    const next = jest.fn() as NextFunction;
+
+    await uploadPhotographerPhoto(uploadReq(), makeRes(), next);
+
+    expect(next).toHaveBeenCalledWith(expect.objectContaining({ status: 404 }));
+  });
+
+  // multer writes to disk before the handler runs, so every exit has to clean
+  // up or each attempt leaks a file.
+  it('deletes the staged temp file on success', async () => {
+    uploadMock.mockResolvedValue({ secure_url: 'https://cdn.example/x.jpg' });
+    updatePhotographerByUserIdMock.mockResolvedValue(photographer);
+
+    await uploadPhotographerPhoto(uploadReq(), makeRes(), jest.fn() as NextFunction);
+
+    expect(unlinkMock).toHaveBeenCalledWith(file.path);
+  });
+
+  it('deletes the staged temp file when the upload fails', async () => {
+    uploadMock.mockRejectedValue(new Error('cloudinary down'));
+    const next = jest.fn() as NextFunction;
+
+    await uploadPhotographerPhoto(uploadReq(), makeRes(), next);
+
+    expect(unlinkMock).toHaveBeenCalledWith(file.path);
+    expect(next).toHaveBeenCalledWith(expect.any(Error));
   });
 });

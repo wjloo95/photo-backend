@@ -24,6 +24,7 @@ import {
   verifyWebhookSignature,
   createUserFromWebhook as createUserFromWebhookHandler,
   updateUserFromId as updateUserFromIdHandler,
+  getCurrentUser as getCurrentUserHandler,
 } from '../users';
 import { insertUserFromWebhook, insertClientFromInvite, updateUserById } from '../../db/queries/users';
 
@@ -36,6 +37,8 @@ const updateUserByIdMock = updateUserById as jest.Mock;
 type Handler = (req: Request, res: Response, next: NextFunction) => Promise<void>;
 const createUserFromWebhook = createUserFromWebhookHandler as unknown as Handler;
 const updateUserFromId = updateUserFromIdHandler as unknown as Handler;
+// getCurrentUser is synchronous — it reads what loadUser already resolved.
+const getCurrentUser = getCurrentUserHandler as unknown as (req: Request, res: Response) => void;
 
 const SECRET = 'test-webhook-secret';
 
@@ -269,5 +272,70 @@ describe('updateUserFromId', () => {
     await updateUserFromId(req, res, next);
 
     expect(next).toHaveBeenCalledWith(dbError);
+  });
+});
+
+// GET /users/me is how the frontend learns who it is. After Auth0 login the
+// browser holds a JWT whose sub is an Auth0 id, but every URL in this API is
+// keyed by the app's own users.id UUID, and the shell needs the role to decide
+// which product to render.
+describe('getCurrentUser', () => {
+  const currentUser: User = {
+    id: 'user-1',
+    email: 'photog@example.com',
+    name: 'Alex Photographer',
+    role: UserRole.photographer,
+    providerId: 'auth0|photog-1',
+    joinedAt: new Date('2026-01-01T00:00:00Z'),
+  };
+
+  const meRes = (): Response =>
+    ({ status: jest.fn().mockReturnThis(), json: jest.fn().mockReturnThis() }) as unknown as Response;
+
+  // This file has no global beforeEach, so the query mocks still carry calls
+  // from the webhook and PATCH suites above.
+  beforeEach(() => {
+    jest.clearAllMocks();
+  });
+
+  it('responds 200 with the user loadUser resolved', () => {
+    const res = meRes();
+
+    getCurrentUser({ user: currentUser } as unknown as Request, res);
+
+    expect(res.status).toHaveBeenCalledWith(200);
+    expect(res.json).toHaveBeenCalledWith(currentUser);
+  });
+
+  // The two fields the frontend cannot proceed without: the app's own user id
+  // (not the Auth0 sub) for building every subsequent URL, and the role.
+  it("carries the app's user id and role, not just the Auth0 identifier", () => {
+    const res = meRes();
+
+    getCurrentUser({ user: currentUser } as unknown as Request, res);
+
+    const [body] = (res.json as jest.Mock).mock.calls[0];
+    expect(body.id).toBe('user-1');
+    expect(body.role).toBe(UserRole.photographer);
+    expect(body.providerId).toBe('auth0|photog-1');
+  });
+
+  it('works the same for a client', () => {
+    const client = { ...currentUser, id: 'client-1', role: UserRole.client };
+    const res = meRes();
+
+    getCurrentUser({ user: client } as unknown as Request, res);
+
+    expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ role: UserRole.client }));
+  });
+
+  // No DB call: loadUser has already done the lookup on every authenticated
+  // request, so this endpoint hands back what it resolved rather than
+  // repeating the query.
+  it('makes no database call of its own', () => {
+    getCurrentUser({ user: currentUser } as unknown as Request, meRes());
+
+    expect(updateUserByIdMock).not.toHaveBeenCalled();
+    expect(insertUserFromWebhookMock).not.toHaveBeenCalled();
   });
 });

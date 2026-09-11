@@ -93,7 +93,36 @@ export const updateUserFromId: RequestHandler = async (req, res, next) => {
   }
 };
 
+// GET /users/me — the authenticated caller's own user record.
+//
+// This exists because the frontend cannot work out who it is on its own. After
+// Auth0 login the browser holds a JWT whose `sub` is an Auth0 identifier
+// ('auth0|abc123'), but every URL in this API is keyed by the app's own
+// users.id UUID, and the shell has to know the caller's role to decide whether
+// to render the photographer dashboard or the client gallery. loadUser already
+// performs exactly that lookup on every authenticated request; this endpoint
+// is the one place it is handed back.
+//
+// Reading from the database rather than from custom JWT claims is deliberate,
+// and follows D-08: the users table is the source of truth for user records.
+// Claims injected at login would remove this round trip, but a role change
+// would not take effect until the token refreshed, and the identity data would
+// live in two places that can disagree — the webhook already syncs Auth0 into
+// the DB, and claims would add a second sync running the other way.
+//
+// The body is the bare User. Bundling the photographer or client profile in
+// here would make /me the endpoint every screen calls to get one field.
+export const getCurrentUser: RequestHandler = (req, res) => {
+  // No DB call and no null check: loadUser has already resolved req.user, and
+  // rejects the request with a 401 when it cannot.
+  res.status(200).json(req.user);
+};
+
 router.post('/', createUserFromWebhook);
+// '/me' must be registered before any '/:id' GET, or Express matches 'me' as
+// an id. There is no GET '/:id' today, but the ordering is the convention that
+// keeps adding one from silently breaking this route.
+router.get('/me', auth, loadUser, getCurrentUser);
 router.patch('/:id', auth, loadUser, updateUserFromId);
 
 export default router;

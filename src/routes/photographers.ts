@@ -7,6 +7,10 @@ import { Album, Photographer, VisibilityType } from '../types';
 import { AppError } from '../types/AppError';
 import cache from '../cache';
 import { getTemplatesByPhotographerId } from '../db/queries/templates';
+import multer from 'multer';
+import fs from 'node:fs/promises';
+import { v2 as cloudinary } from 'cloudinary';
+import { UPLOAD_TMP_DIR } from '../config/uploads';
 
 const router = Router();
 
@@ -163,11 +167,92 @@ export const updatePhotographerFromId: RequestHandler = async (req, res, next) =
   }
 };
 
+/**
+ * A profile photo is one small image, so the ceiling is far below the 25MB
+ * allowed per album photo, and the type is checked up front — Cloudinary would
+ * reject a PDF anyway, but doing it here turns a provider error into a 400 and
+ * avoids paying for the upload first.
+ */
+const profilePhotoUpload = multer({
+  storage: multer.diskStorage({ destination: UPLOAD_TMP_DIR }),
+  limits: { fileSize: 5 * 1024 * 1024 },
+  fileFilter: (_req, file, cb) => {
+    cb(null, file.mimetype.startsWith('image/'));
+  },
+});
+
+// POST /photographers/:id/photo — own profile only, enforced by the same
+// id-vs-caller check PATCH /photographers/:id uses. No requireRole guard, per
+// this router's convention: the ownership check subsumes it, since only a
+// photographer can be the subject of a photographers row.
+//
+// Synchronous, unlike POST /albums/:id/photos/batch. That endpoint takes many
+// large files, does real processing on each, and returns 202 so the request
+// isn't held open; here there is one small file, no derivative work, and a
+// photographer who has just picked an avatar expects to see it. A 202 would
+// mean showing the old photo for an indeterminate time. There is also no
+// `photos` row involved — a profile photo is a URL on the photographers table,
+// with no status machine and no album to join.
+//
+// The Cloudinary public_id is deterministic: `photographers/<id>/profile` with
+// overwrite. Replacing an avatar therefore replaces the same asset instead of
+// leaving the previous one orphaned, which means no column tracking the old
+// public id and no cleanup job. It also makes the write idempotent — if the DB
+// update below fails after a successful upload, a retry overwrites the same
+// asset rather than accumulating copies.
+//
+// `invalidate` clears Cloudinary's CDN cache for that id. Without it the URL
+// is unchanged but the bytes behind it are stale, so the new photo would not
+// appear for viewers holding the old cached copy.
+export const uploadPhotographerPhoto: RequestHandler = async (req, res, next) => {
+  try {
+    if (req.params.id !== req.user?.id) {
+      return next(new AppError('Forbidden', 403));
+    }
+
+    // multer leaves req.file undefined both when no file was sent and when
+    // fileFilter rejected the one that was — a 400 covers both.
+    if (!req.file) {
+      return next(new AppError('An image file is required', 400));
+    }
+
+    try {
+      const { secure_url } = await cloudinary.uploader.upload(req.file.path, {
+        public_id: `photographers/${req.params.id}/profile`,
+        overwrite: true,
+        invalidate: true,
+      });
+
+      const photographer = await updatePhotographerByUserId(req.params.id, {
+        profilePhotoUrl: secure_url,
+      });
+
+      if (!photographer) {
+        return next(new AppError('Photographer not found', 404));
+      }
+
+      // The profile is cached for an hour (D-15). Without this the photographer
+      // uploads a new photo and keeps seeing the old one for up to 60 minutes.
+      await cache.del(`photographer:profile:${req.params.id}`);
+
+      res.status(200).json(photographer);
+    } finally {
+      // multer has already written the file to disk by the time this handler
+      // runs, so it has to be cleaned up on every path out — including the
+      // failures above, which would otherwise leak a file per attempt.
+      await fs.unlink(req.file.path).catch(() => undefined);
+    }
+  } catch (err) {
+    next(err);
+  }
+};
+
 router.get('/:id', getPhotographerFromId);
 router.get('/:id/clients', getPhotographerClientsFromId);
 router.get('/:id/albums', getPhotographerAlbumsFromId);
 router.get('/:id/invites', getPhotographerInvitesFromId);
 router.get('/:id/templates', getPhotographerTemplatesFromId);
 router.patch('/:id', updatePhotographerFromId);
+router.post('/:id/photo', profilePhotoUpload.single('photo'), uploadPhotographerPhoto);
 
 export default router;

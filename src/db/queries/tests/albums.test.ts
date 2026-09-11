@@ -11,6 +11,7 @@ import {
   getAlbumsNeedingWarning,
   getExpiredAlbums,
   rehydrateAlbumDates,
+  getAlbumsByClientId,
 } from '../albums';
 import { pool } from '../../../config/database';
 import { AlbumType } from '../../../types';
@@ -310,5 +311,46 @@ describe('getExpiredAlbums — deletion gate', () => {
     const [sql] = mockQuery.mock.calls[0];
     expect(sql).toContain('access_expires_at < NOW()');
     expect(sql).toContain('warned_7_at IS NOT NULL');
+  });
+});
+
+describe('getAlbumsByClientId', () => {
+  it('maps every row, newest shoot first', async () => {
+    mockQuery.mockResolvedValue({ rows: [fullAlbumRow] });
+
+    await expect(getAlbumsByClientId('client-1')).resolves.toEqual([fullAlbum]);
+
+    const [sql, params] = mockQuery.mock.calls[0];
+    expect(sql).toContain('WHERE client_id = $1');
+    expect(sql).toContain('ORDER BY shoot_date DESC');
+    expect(params).toEqual(['client-1']);
+  });
+
+  it('returns an empty array when the client has no albums', async () => {
+    mockQuery.mockResolvedValue({ rows: [] });
+
+    await expect(getAlbumsByClientId('client-1')).resolves.toEqual([]);
+  });
+
+  // Portfolio albums have no client_id by design (migration 004), so the
+  // predicate excludes them without needing a type check.
+  it('filters on client_id alone, which already excludes portfolio albums', async () => {
+    mockQuery.mockResolvedValue({ rows: [] });
+
+    await getAlbumsByClientId('client-1');
+
+    const [sql] = mockQuery.mock.calls[0];
+    expect(sql).not.toContain('type');
+  });
+
+  // GET /albums/:id applies no expiry filter either. Filtering here would make
+  // an album reachable directly but missing from the list it belongs to.
+  it('does not filter on expiry', async () => {
+    mockQuery.mockResolvedValue({ rows: [] });
+
+    await getAlbumsByClientId('client-1');
+
+    const [sql] = mockQuery.mock.calls[0];
+    expect(sql).not.toContain('access_expires_at');
   });
 });

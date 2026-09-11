@@ -9,17 +9,27 @@ jest.mock('../../db/queries/clients', () => ({
   getClientByUserId: jest.fn(),
 }));
 
-import { getClientResponsesFromId as getClientResponsesFromIdHandler } from '../clients';
+jest.mock('../../db/queries/albums', () => ({
+  getAlbumsByClientId: jest.fn(),
+}));
+
+import {
+  getClientResponsesFromId as getClientResponsesFromIdHandler,
+  getClientAlbumsFromId as getClientAlbumsFromIdHandler,
+} from '../clients';
+import { getAlbumsByClientId } from '../../db/queries/albums';
 import { getResponsesByClientId, FormResponseSummary } from '../../db/queries/responses';
 import { getClientByUserId } from '../../db/queries/clients';
 
 const getResponsesByClientIdMock = getResponsesByClientId as jest.Mock;
 const getClientByUserIdMock = getClientByUserId as jest.Mock;
+const getAlbumsByClientIdMock = getAlbumsByClientId as jest.Mock;
 
 // RequestHandler's type signature says it returns void, but the actual
 // implementation is async — cast so tests can await it.
 type Handler = (req: Request, res: Response, next: NextFunction) => Promise<void>;
 const getClientResponsesFromId = getClientResponsesFromIdHandler as unknown as Handler;
+const getClientAlbumsFromId = getClientAlbumsFromIdHandler as unknown as Handler;
 
 const makeRes = (): Response =>
   ({
@@ -187,6 +197,114 @@ describe('getClientResponsesFromId', () => {
     const next = jest.fn() as NextFunction;
 
     await getClientResponsesFromId(
+      makeReq({ params: { id: 'client-1' }, user: client }),
+      makeRes(),
+      next,
+    );
+
+    expect(next).toHaveBeenCalledWith(dbError);
+  });
+});
+
+// GET /clients/:id/albums is the only route by which a logged-in client
+// discovers their own galleries: GET /albums/:id needs an id they already
+// have, and GET /photographers/:id/albums is photographer-scoped.
+describe('getClientAlbumsFromId', () => {
+  const albums = [
+    { id: 'album-1', clientId: 'client-1', shootDate: new Date('2026-06-01') },
+    { id: 'album-2', clientId: 'client-1', shootDate: new Date('2026-01-01') },
+  ];
+
+  it('responds 200 with their own albums when the caller is the client', async () => {
+    getAlbumsByClientIdMock.mockResolvedValue(albums);
+    const res = makeRes();
+    const next = jest.fn() as NextFunction;
+
+    await getClientAlbumsFromId(makeReq({ params: { id: 'client-1' }, user: client }), res, next);
+
+    expect(getAlbumsByClientIdMock).toHaveBeenCalledWith('client-1');
+    expect(res.status).toHaveBeenCalledWith(200);
+    expect(res.json).toHaveBeenCalledWith(albums);
+    expect(next).not.toHaveBeenCalled();
+  });
+
+  it("responds 200 when the caller is the client's own photographer", async () => {
+    getClientByUserIdMock.mockResolvedValue(clientRecord);
+    getAlbumsByClientIdMock.mockResolvedValue(albums);
+    const res = makeRes();
+    const next = jest.fn() as NextFunction;
+
+    await getClientAlbumsFromId(
+      makeReq({ params: { id: 'client-1' }, user: photographer }),
+      res,
+      next,
+    );
+
+    expect(getClientByUserIdMock).toHaveBeenCalledWith('client-1');
+    expect(res.status).toHaveBeenCalledWith(200);
+    expect(next).not.toHaveBeenCalled();
+  });
+
+  it('responds 200 with an empty list when the client has no albums', async () => {
+    getAlbumsByClientIdMock.mockResolvedValue([]);
+    const res = makeRes();
+
+    await getClientAlbumsFromId(
+      makeReq({ params: { id: 'client-1' }, user: client }),
+      res,
+      jest.fn() as NextFunction,
+    );
+
+    expect(res.json).toHaveBeenCalledWith([]);
+  });
+
+  it("responds 403 to a photographer asking about someone else's client", async () => {
+    getClientByUserIdMock.mockResolvedValue(clientRecord);
+    const next = jest.fn() as NextFunction;
+
+    await getClientAlbumsFromId(
+      makeReq({ params: { id: 'client-1' }, user: otherPhotographer }),
+      makeRes(),
+      next,
+    );
+
+    expect(next).toHaveBeenCalledWith(expect.objectContaining({ status: 403 }));
+    expect(getAlbumsByClientIdMock).not.toHaveBeenCalled();
+  });
+
+  it("responds 403 to a client asking for another client's albums", async () => {
+    const next = jest.fn() as NextFunction;
+
+    await getClientAlbumsFromId(
+      makeReq({ params: { id: 'client-1' }, user: otherClient }),
+      makeRes(),
+      next,
+    );
+
+    expect(next).toHaveBeenCalledWith(expect.objectContaining({ status: 403 }));
+    expect(getAlbumsByClientIdMock).not.toHaveBeenCalled();
+  });
+
+  it('responds 403 when the client in the URL does not exist', async () => {
+    getClientByUserIdMock.mockResolvedValue(null);
+    const next = jest.fn() as NextFunction;
+
+    await getClientAlbumsFromId(
+      makeReq({ params: { id: 'nobody' }, user: photographer }),
+      makeRes(),
+      next,
+    );
+
+    expect(next).toHaveBeenCalledWith(expect.objectContaining({ status: 403 }));
+    expect(getAlbumsByClientIdMock).not.toHaveBeenCalled();
+  });
+
+  it('forwards an unexpected DB error rather than swallowing it', async () => {
+    const dbError = new Error('db exploded');
+    getAlbumsByClientIdMock.mockRejectedValue(dbError);
+    const next = jest.fn() as NextFunction;
+
+    await getClientAlbumsFromId(
       makeReq({ params: { id: 'client-1' }, user: client }),
       makeRes(),
       next,

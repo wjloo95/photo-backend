@@ -5,7 +5,7 @@
 
 **Stack:** Node.js / TypeScript · Express · PostgreSQL (RDS) · Redis (ElastiCache) · BullMQ · Cloudinary · Auth0/Clerk · AWS
 
-**Scale:** 11 database entities · 42 REST endpoints · 25 architecture decisions · 7 post-MVP items · Millions of users target
+**Scale:** 11 database entities · 40 live REST endpoints · 26 architecture decisions · 7 post-MVP items · Millions of users target
 
 ---
 
@@ -13,7 +13,7 @@
 
 1. [System Overview & Requirements](#1-system-overview--requirements)
 2. [Database Schema](#2-database-schema-11-entities)
-3. [REST API Surface](#3-rest-api-surface-42-endpoints)
+3. [REST API Surface](#3-rest-api-surface-40-live--1-planned)
 4. [Architecture Decisions](#4-architecture-decisions)
 5. [Deployment Architecture](#5-deployment-architecture)
 6. [Post-MVP Roadmap](#6-post-mvp-roadmap)
@@ -234,35 +234,48 @@ cross-entity validation query.
 
 ---
 
-## 3. REST API Surface (42 Endpoints)
+## 3. REST API Surface (40 Live + 1 Planned)
+
+> This section is synced to the implementation. Rows marked ⚠️ **not built**
+> are intended but unimplemented; everything else is live in `src/routes/`.
 
 All list endpoints are identity-scoped — filtered server-side by JWT auth token, not URL parameters. `GET /photographers/:id` returns role-scoped response shapes.
 
 ### Users
-| Method | Path | Description | Access |
-|---|---|---|---|
-| POST | /users | Create user on signup (Auth0 webhook) | internal |
-| PATCH | /users/:id | Update email and name | both |
-| DELETE | /users/:id | Delete account (cascades) | both |
+| Method | Path | Description | Access | Status |
+|---|---|---|---|---|
+| POST | /users | Create user on signup (Auth0 webhook) | internal | |
+| GET | /users/me | The caller's own user record | both | |
+| PATCH | /users/:id | Update email and name | both | |
+| DELETE | /users/:id | Delete account (cascades) | both | ⚠️ **not built** |
 
 ### Photographers
-| Method | Path | Description | Access |
-|---|---|---|---|
-| GET | /photographers/:id | Get profile (role-scoped response shape) | both |
-| PATCH | /photographers/:id | Update profile fields | photographer |
-| POST | /photographers/:id/photo | Upload profile photo | photographer |
-| GET | /photographers/:id/clients | Get all clients | photographer |
-| GET | /photographers/:id/albums | Get all albums | photographer |
-| GET | /photographers/:id/invites | Get pending invites | photographer |
-| GET | /photographers/:id/templates | Get form templates | photographer |
+| Method | Path | Description | Access | Status |
+|---|---|---|---|---|
+| GET | /photographers/:id | Get profile (one shape for every caller, D-18) | both | |
+| PATCH | /photographers/:id | Update profile fields | photographer | |
+| POST | /photographers/:id/photo | Upload profile photo (synchronous) | photographer | |
+| GET | /photographers/:id/clients | Get all clients | photographer | |
+| GET | /photographers/:id/albums | Get all albums | photographer | |
+| GET | /photographers/:id/invites | Get pending invites | photographer | |
+| GET | /photographers/:id/templates | Get form templates | photographer | |
 
 ### Clients
 | Method | Path | Description | Access |
 |---|---|---|---|
-| GET | /clients/:id | Get client profile | both |
-| GET | /clients/:id/albums | Get all albums | client |
+| GET | /clients/:id/albums | Get all albums for one client | both |
 | GET | /clients/:id/responses | Get all form responses (summaries) | both |
-| GET | /clients/:id/conversations | Get client conversation | client |
+
+Both are readable by the client themselves or by their photographer, via the
+shared `assertCanReadClient` check — a client id in a URL is never trusted on
+its own (D-17). `GET /clients/:id/albums` is how a client discovers their
+galleries at all: `GET /albums/:id` needs an id they already have, and the
+photographer-scoped list is closed to them.
+
+`GET /clients/:id/conversations` was dropped: `GET /conversations` is
+identity-scoped, so a client already gets their own conversation from it.
+`GET /clients/:id` was dropped too — `Client` is only `{userId,
+photographerId}`, and nothing needs an endpoint to read it.
 
 ### Invites
 | Method | Path | Description | Access |
@@ -282,8 +295,8 @@ All list endpoints are identity-scoped — filtered server-side by JWT auth toke
 | GET | /albums/:id/photos | Get photos, paginated (?page=&limit=) | both |
 | POST | /albums/:id/photos/batch | Bulk upload photos | photographer |
 | DELETE | /albums/:id/photos/batch | Bulk remove photos from album | photographer |
-| POST | /albums/:id/photos/:id | Add existing photo to album | photographer |
-| DELETE | /albums/:id/photos/:id | Remove photo from album only | photographer |
+| POST | /albums/:id/photos/:photoId | Add existing photo to album | photographer |
+| DELETE | /albums/:id/photos/:photoId | Remove photo from album only | photographer |
 | GET | /photos/:id | Get single photo | both |
 | DELETE | /photos/:id | Permanently delete photo from system | photographer |
 
@@ -294,7 +307,7 @@ All list endpoints are identity-scoped — filtered server-side by JWT auth toke
 | GET | /conversations/:id | Get single conversation | both |
 | GET | /conversations/:id/messages | Get messages, paginated | both |
 | POST | /conversations/:id/messages | Send message | both |
-| PATCH | /conversations/:id/messages/:id | Mark message as read | both |
+| PATCH | /conversations/:id/read | Mark the whole conversation as read | both |
 
 ### Forms & Questionnaires
 | Method | Path | Description | Access |
@@ -591,6 +604,19 @@ The second half of the decision is what keeps the gate from becoming a leak. A s
 | Why invite-only | Self-signup (F-05) |
 |---|---|
 | Every client always linked to a photographer. No orphaned accounts | Same creation flow, link established via code or search post-MVP |
+
+---
+
+#### D-26 — Client identity: `GET /users/me`, not JWT claims
+**Decision:** The frontend resolves its own identity by calling `GET /users/me`, which returns the `User` row `loadUser` already resolved. Auth0 custom claims were rejected.
+
+**Rationale:** After login the browser holds a JWT whose `sub` is an Auth0 identifier, but every URL in this API is keyed by the app's own `users.id` UUID, and the shell needs the caller's role to decide which product to render. Nothing in the token supplies either.
+
+Custom claims would remove the round trip, but they contradict D-08: the `users` table is the source of truth for user records. A role change wouldn't take effect until the token refreshed, and the webhook already syncs Auth0 into the database — claims would add a second sync running the other way, with the identity data able to disagree between them.
+
+| Why this works | Tradeoff |
+|---|---|
+| Always current, no Auth0-side configuration, and app logic stays in the repo under code review | One extra request during app boot. The route must be registered before any `GET /:id` on the same router, or Express matches `me` as an id |
 
 ---
 

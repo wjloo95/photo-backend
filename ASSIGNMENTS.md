@@ -269,6 +269,28 @@
 - [x] `PATCH /responses/:id/submit` — client submits. Set `submitted_at = NOW()`. After this, the response is locked: no further answer writes
 - [x] `GET /clients/:id/responses` — list all responses for a client, as summaries without the question snapshots
 
+### 8.3 — Client album access (not in the original phases)
+
+`GET /clients/:id/albums` was in the architecture doc's endpoint table but was
+never assigned to a phase. Without it a logged-in client has no way to find
+their own galleries: `GET /albums/:id` needs an id they already have, and
+`GET /photographers/:id/albums` is photographer-only.
+
+- [x] `GET /clients/:id/albums` — the client themselves or their photographer, via the same `assertCanReadClient` check as `GET /clients/:id/responses`. Newest shoot first, no expiry filter (`GET /albums/:id` applies none either)
+
+### 8.4 — Frontend prerequisites (not in the original phases)
+
+Two more endpoints the architecture doc listed but no phase assigned, both
+needed before a frontend can be built.
+
+- [x] `GET /users/me` — the caller's own `User` row, so the frontend can learn its app user id and role after Auth0 login. Reads what `loadUser` already resolved; no DB call of its own. Registered before any `GET /:id` on the users router, or Express matches `me` as an id (D-26)
+- [x] `POST /photographers/:id/photo` — synchronous, unlike the album photo batch: one small file, no derivative work, and the caller expects to see it immediately. Deterministic Cloudinary `public_id` with `overwrite`, so replacing an avatar replaces the same asset instead of orphaning the old one. Invalidates `photographer:profile:{id}` — the profile is cached for an hour
+
+Still unbuilt: `DELETE /users/:id` (assigned in 2.3). It cascades across nine
+tables, and `albums.client_id` is `ON DELETE SET NULL`, so deleting a client
+leaves their shoot albums alive but unwarnable — the case the expiry pipeline
+handles by marking them warned with no recipient.
+
 ---
 
 ## Quick Reference

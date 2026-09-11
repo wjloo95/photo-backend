@@ -55,6 +55,34 @@ export function rehydrateAlbumDates(album: Album): Album {
   };
 }
 
+/**
+ * GET /clients/:id/albums — every album belonging to one client.
+ *
+ * The counterpart to getPhotographerAlbumsByUserId, and the only way a client
+ * discovers their own galleries: GET /albums/:id needs an id they already
+ * have, and the photographer-scoped list is closed to them.
+ *
+ * Newest shoot first. Ordering by shoot_date rather than created_at matches
+ * how a client thinks about their galleries — by when the shoot happened, not
+ * when the photographer got round to uploading it.
+ *
+ * Portfolio albums never appear: they have no client_id by design (migration
+ * 004), so the predicate excludes them without a type check.
+ *
+ * No expiry filter, deliberately. GET /albums/:id doesn't apply one either, so
+ * filtering here would make an album visible directly but invisible in the
+ * list it belongs to. Whether access should actually end at access_expires_at
+ * rather than at deletion is a real open question (see D-04) — but it belongs
+ * in one place covering both endpoints, not smuggled into this query.
+ */
+export async function getAlbumsByClientId(clientId: string): Promise<Album[]> {
+  const result = await pool.query<AlbumRow>(
+    'SELECT * FROM albums WHERE client_id = $1 ORDER BY shoot_date DESC',
+    [clientId],
+  );
+  return result.rows.map(toAlbum);
+}
+
 export async function getPhotographerAlbumsByUserId(photographerId: string): Promise<Album[]> {
   const result = await pool.query<AlbumRow>('SELECT * FROM albums WHERE photographer_id = $1', [
     photographerId,
