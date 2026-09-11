@@ -28,6 +28,7 @@ import cors from 'cors';
 import { errorHandler } from './middleware/errorHandler';
 import { auth, loadUser } from './middleware/auth';
 import usersRouter from './routes/users';
+import photographersRouter from './routes/photographers';
 
 const app = express();
 
@@ -73,6 +74,7 @@ app.use(loadUser);
 
 // ── Routes ────────────────────────────────────────────────────
 // Mount your routers here as you build them.
+app.use('/photographers', photographersRouter);
 
 // TODO: remove before shipping — triggers errorHandler with different error shapes
 app.get('/test-error', (_req, _res, next) => {

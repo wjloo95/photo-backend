@@ -1,18 +1,21 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { insertUserFromWebhook, InsertUserFromWebhookInput } from '../users';
+import { insertUserFromWebhook, InsertUserFromWebhookInput, updateUserById } from '../users';
 import { User, UserRole } from '../../../types';
-import { AppError } from '../../../types/AppError';
 
-const { mockClient, mockConnect } = vi.hoisted(() => {
+const { mockClient, mockConnect, mockQuery } = vi.hoisted(() => {
   const mockClient = {
     query: vi.fn(),
     release: vi.fn(),
   };
-  return { mockClient, mockConnect: vi.fn(() => Promise.resolve(mockClient)) };
+  return {
+    mockClient,
+    mockConnect: vi.fn(() => Promise.resolve(mockClient)),
+    mockQuery: vi.fn(),
+  };
 });
 
 vi.mock('../../../config/database', () => ({
-  pool: { connect: mockConnect },
+  pool: { connect: mockConnect, query: mockQuery },
 }));
 
 beforeEach(() => {
@@ -22,20 +25,22 @@ beforeEach(() => {
 
 const clientInput: InsertUserFromWebhookInput = {
   email: 'client@example.com',
+  name: 'Jane Client',
   role: UserRole.client,
   providerId: 'auth0|client-1',
 };
 
 const photographerInput: InsertUserFromWebhookInput = {
   email: 'photographer@example.com',
+  name: 'Alex Photographer',
   role: UserRole.photographer,
   providerId: 'auth0|photographer-1',
-  businessName: 'Acme Photography',
 };
 
 const createdUser: User = {
   id: 'user-1',
   email: clientInput.email,
+  name: clientInput.name,
   role: UserRole.client,
   providerId: clientInput.providerId,
   joinedAt: new Date('2026-01-01T00:00:00Z'),
@@ -56,7 +61,7 @@ describe('insertUserFromWebhook — client signup', () => {
     expect(mockClient.query).toHaveBeenNthCalledWith(
       2,
       expect.stringContaining('INSERT INTO users'),
-      [clientInput.email, clientInput.role, clientInput.providerId],
+      [clientInput.email, clientInput.name, clientInput.role, clientInput.providerId],
     );
     expect(mockClient.query).toHaveBeenNthCalledWith(3, 'COMMIT');
     expect(mockClient.query).not.toHaveBeenCalledWith('ROLLBACK');
@@ -102,19 +107,9 @@ describe('insertUserFromWebhook — photographer signup', () => {
     expect(mockClient.query).toHaveBeenNthCalledWith(
       3,
       expect.stringContaining('INSERT INTO photographers'),
-      [createdPhotographerUser.id, photographerInput.businessName],
+      [createdPhotographerUser.id],
     );
     expect(mockClient.query).toHaveBeenNthCalledWith(4, 'COMMIT');
-  });
-
-  it('rejects with a 400 AppError and never opens a connection when businessName is missing', async () => {
-    const invalidInput = { ...photographerInput, businessName: undefined };
-
-    await expect(insertUserFromWebhook(invalidInput)).rejects.toMatchObject({
-      status: 400,
-    });
-    await expect(insertUserFromWebhook(invalidInput)).rejects.toBeInstanceOf(AppError);
-    expect(mockConnect).not.toHaveBeenCalled();
   });
 });
 
@@ -146,5 +141,40 @@ describe('insertUserFromWebhook — failure handling', () => {
     expect(mockClient.query).toHaveBeenCalledWith('ROLLBACK');
     expect(mockClient.query).not.toHaveBeenCalledWith('COMMIT');
     expect(mockClient.release).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('updateUserById', () => {
+  it('passes fields through as COALESCE params in userId, email, name order', async () => {
+    mockQuery.mockResolvedValue({
+      rows: [{ ...createdUser, email: 'new@example.com', name: 'New Name' }],
+    });
+
+    const result = await updateUserById('user-1', { email: 'new@example.com', name: 'New Name' });
+
+    expect(mockQuery).toHaveBeenCalledWith(expect.stringContaining('UPDATE users'), [
+      'user-1',
+      'new@example.com',
+      'New Name',
+    ]);
+    expect(result?.email).toBe('new@example.com');
+    expect(result?.name).toBe('New Name');
+  });
+
+  it('passes undefined for omitted fields, relying on COALESCE to keep existing values', async () => {
+    mockQuery.mockResolvedValue({ rows: [createdUser] });
+
+    await updateUserById('user-1', { name: 'New Name' });
+
+    const [, params] = mockQuery.mock.calls[0];
+    expect(params).toEqual(['user-1', undefined, 'New Name']);
+  });
+
+  it('returns null when the row does not exist (RETURNING produces no rows)', async () => {
+    mockQuery.mockResolvedValue({ rows: [] });
+
+    const result = await updateUserById('missing-id', { name: 'New Name' });
+
+    expect(result).toBeNull();
   });
 });

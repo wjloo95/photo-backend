@@ -141,6 +141,7 @@ describe('loadUser — attaches the DB user to req.user', () => {
     const user: User = {
       id: 'user-1',
       email: 'photographer@example.com',
+      name: 'Alex Photographer',
       role: UserRole.photographer,
       providerId: 'auth0|abc123',
       joinedAt: new Date('2026-01-01T00:00:00Z'),

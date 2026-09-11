@@ -61,6 +61,7 @@ PostgreSQL via AWS RDS. All entities use UUID primary keys. Foreign keys enforce
 |---|---|---|
 | id | uuid | PK |
 | email | string | |
+| name | string | shared by both photographers and clients |
 | role | enum('photographer', 'client') | |
 | provider_id | string | Auth0/Clerk ref |
 | joined_at | timestamp | |
@@ -69,7 +70,6 @@ PostgreSQL via AWS RDS. All entities use UUID primary keys. Foreign keys enforce
 | Field | Type | Notes |
 |---|---|---|
 | user_id | uuid | FK → User |
-| business_name | string | |
 | bio | text | |
 | profile_photo_url | string | Cloudinary path |
 | instagram_handle | string | |
@@ -200,7 +200,7 @@ All list endpoints are identity-scoped — filtered server-side by JWT auth toke
 | Method | Path | Description | Access |
 |---|---|---|---|
 | POST | /users | Create user on signup (Auth0 webhook) | internal |
-| PATCH | /users/:id | Update email | both |
+| PATCH | /users/:id | Update email and name | both |
 | DELETE | /users/:id | Delete account (cascades) | both |
 
 ### Photographers
@@ -487,13 +487,13 @@ All list endpoints are identity-scoped — filtered server-side by JWT auth toke
 ---
 
 #### D-18 — Role-scoped field authorization
-**Decision:** `GET /photographers/:id` returns different shapes by caller role.
+**Decision:** `GET /photographers/:id` returns one response shape to every caller — no role branching.
 
-**Rationale:** Clients see public fields only. Photographers see all fields including visibility settings.
+**Rationale:** None of the fields on `Photographer` (business name, bio, profile photo, Instagram handle, visibility) are actually sensitive — they're portfolio/storefront content by design, not private data. Revised from an earlier decision to split the response by caller role, which added authorization branching this resource doesn't need.
 
-| Why one endpoint | Alternative |
+| Why one shape | Alternative |
 |---|---|
-| Authorization concern, not routing concern. Cleaner API surface | Two separate endpoints. More explicit but doubles count for every role-sensitive resource |
+| Simpler handler, no risk of a field leaking into the wrong response shape. Nothing here needs hiding | Role-scoped shapes (previous decision) — justified when some fields are genuinely private, not the case here |
 
 ---
 

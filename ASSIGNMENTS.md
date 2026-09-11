@@ -50,7 +50,7 @@
 - [ ] **Test:** POST a fake payload, confirm rows in both tables via `psql`
 
 ### 2.2 — Photographer Profile `GET /photographers/:id` · `PATCH /photographers/:id`
-- [ ] `GET`: protected by auth middleware. Returns **different response shapes** based on caller role — photographer sees all fields, client sees public fields only (D-18)
+- [ ] `GET`: protected by auth middleware. Returns the same response shape to every caller — no fields are private (D-18)
 - [ ] `PATCH`: requires auth + `requireRole(photographer)`. Verifies the `:id` in the URL matches the caller's own ID — don't trust the URL alone
 - [ ] Add `GET /photographers/:id/clients` and `GET /photographers/:id/albums` while you're here
 

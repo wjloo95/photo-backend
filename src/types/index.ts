@@ -56,6 +56,7 @@ export enum VisibilityType {
 export interface User {
   id: string;           // UUID primary key
   email: string;
+  name: string;
   role: UserRole;
   providerId: string;   // Auth0/Clerk external reference (provider_id in DB)
   joinedAt: Date;
@@ -67,7 +68,6 @@ export interface User {
  */
 export interface Photographer {
   userId: string;             // FK → User.id (also acts as PK)
-  businessName: string;
   bio: string;
   profilePhotoUrl: string;    // Cloudinary path
   instagramHandle: string;

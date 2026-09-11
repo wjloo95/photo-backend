@@ -1,6 +1,8 @@
 import { Router, Request, RequestHandler } from 'express';
-import { insertUserFromWebhook } from '../db/queries/users';
+import { insertUserFromWebhook, updateUserById } from '../db/queries/users';
 import { env } from '../config/env';
+import { auth, loadUser } from '../middleware/auth';
+import { AppError } from '../types/AppError';
 import crypto from 'node:crypto';
 
 const router = Router();
@@ -22,7 +24,10 @@ export function verifyWebhookSignature(req: Request): boolean {
   const signature = req.headers[SIGNATURE_HEADER];
   if (typeof signature !== 'string' || !req.rawBody) return false;
 
-  const expected = crypto.createHmac('sha256', env.AUTH0_WEBHOOK_SECRET).update(req.rawBody).digest('hex');
+  const expected = crypto
+    .createHmac('sha256', env.AUTH0_WEBHOOK_SECRET)
+    .update(req.rawBody)
+    .digest('hex');
 
   const signatureBuffer = Buffer.from(signature, 'hex');
   const expectedBuffer = Buffer.from(expected, 'hex');
@@ -46,14 +51,38 @@ export const createUserFromWebhook: RequestHandler = async (req, res, next) => {
       return;
     }
 
-    const { email, role, providerId, businessName } = req.body;
-    const createdUser = await insertUserFromWebhook({ email, role, providerId, businessName });
+    const { email, name, role, providerId } = req.body;
+    const createdUser = await insertUserFromWebhook({ email, name, role, providerId });
     res.status(201).json(createdUser);
   } catch (err) {
     next(err);
   }
 };
 
+// PATCH /users/:id — end-user profile update (email, name), not the Auth0
+// webhook, so it needs the real JWT auth chain. This router is mounted
+// before the global auth/loadUser in app.ts (so the webhook above can run
+// without a JWT), so auth + loadUser are applied directly on this route.
+export const updateUserFromId: RequestHandler = async (req, res, next) => {
+  try {
+    if (req.params.id !== req.user?.id) {
+      return next(new AppError('Forbidden', 403));
+    }
+
+    const { email, name } = req.body;
+    const updatedUser = await updateUserById(req.params.id, { email, name });
+
+    if (!updatedUser) {
+      return next(new AppError('User not found', 404));
+    }
+
+    res.json(updatedUser);
+  } catch (err) {
+    next(err);
+  }
+};
+
 router.post('/', createUserFromWebhook);
+router.patch('/:id', auth, loadUser, updateUserFromId);
 
 export default router;

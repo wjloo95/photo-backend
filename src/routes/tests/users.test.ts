@@ -7,20 +7,34 @@ vi.mock('../../config/env', () => ({
   env: { AUTH0_WEBHOOK_SECRET: 'test-webhook-secret' },
 }));
 
-const { insertUserFromWebhookMock } = vi.hoisted(() => ({ insertUserFromWebhookMock: vi.fn() }));
+const { insertUserFromWebhookMock, updateUserByIdMock } = vi.hoisted(() => ({
+  insertUserFromWebhookMock: vi.fn(),
+  updateUserByIdMock: vi.fn(),
+}));
 vi.mock('../../db/queries/users', () => ({
   insertUserFromWebhook: insertUserFromWebhookMock,
+  updateUserById: updateUserByIdMock,
 }));
 
-import { verifyWebhookSignature, createUserFromWebhook as createUserFromWebhookHandler } from '../users';
+// auth/loadUser are applied directly on the PATCH route (this router is
+// mounted before the global auth chain in app.ts) — stub them as pass-through
+// so the handler test can drive req.user itself.
+vi.mock('../../middleware/auth', () => ({
+  auth: (_req: Request, _res: Response, next: NextFunction) => next(),
+  loadUser: (_req: Request, _res: Response, next: NextFunction) => next(),
+}));
+
+import {
+  verifyWebhookSignature,
+  createUserFromWebhook as createUserFromWebhookHandler,
+  updateUserFromId as updateUserFromIdHandler,
+} from '../users';
 
 // RequestHandler's type signature says it returns void, but the actual
 // implementation is async — cast so tests can await it.
-const createUserFromWebhook = createUserFromWebhookHandler as unknown as (
-  req: Request,
-  res: Response,
-  next: NextFunction,
-) => Promise<void>;
+type Handler = (req: Request, res: Response, next: NextFunction) => Promise<void>;
+const createUserFromWebhook = createUserFromWebhookHandler as unknown as Handler;
+const updateUserFromId = updateUserFromIdHandler as unknown as Handler;
 
 const SECRET = 'test-webhook-secret';
 
@@ -82,7 +96,7 @@ describe('createUserFromWebhook', () => {
   });
 
   it('responds 201 with the created user when the signature is valid and the insert succeeds', async () => {
-    const payload = { email: 'a@example.com', role: UserRole.client, providerId: 'auth0|1' };
+    const payload = { email: 'a@example.com', name: 'A Client', role: UserRole.client, providerId: 'auth0|1' };
     const createdUser: User = { id: 'user-1', joinedAt: new Date('2026-01-01T00:00:00Z'), ...payload };
     insertUserFromWebhookMock.mockResolvedValue(createdUser);
 
@@ -99,7 +113,7 @@ describe('createUserFromWebhook', () => {
   });
 
   it('forwards errors from insertUserFromWebhook to next(err) rather than throwing', async () => {
-    const payload = { email: 'a@example.com', role: UserRole.client, providerId: 'auth0|1' };
+    const payload = { email: 'a@example.com', name: 'A Client', role: UserRole.client, providerId: 'auth0|1' };
     const dbError = new Error('insert failed');
     insertUserFromWebhookMock.mockRejectedValue(dbError);
 
@@ -111,5 +125,89 @@ describe('createUserFromWebhook', () => {
 
     expect(next).toHaveBeenCalledWith(dbError);
     expect(res.status).not.toHaveBeenCalled();
+  });
+});
+
+describe('updateUserFromId', () => {
+  const makeRes = (): Response =>
+    ({
+      status: vi.fn().mockReturnThis(),
+      json: vi.fn().mockReturnThis(),
+    }) as unknown as Response;
+
+  const makeReq = (opts: { params?: object; user?: User; body?: object } = {}): Request =>
+    ({ params: opts.params ?? {}, user: opts.user, body: opts.body ?? {} }) as unknown as Request;
+
+  const owner: User = {
+    id: 'user-1',
+    email: 'owner@example.com',
+    name: 'Original Name',
+    role: UserRole.client,
+    providerId: 'auth0|user-1',
+    joinedAt: new Date('2026-01-01T00:00:00Z'),
+  };
+
+  beforeEach(() => {
+    updateUserByIdMock.mockReset();
+  });
+
+  it('responds 403 and never calls updateUserById when the caller is not the user in the URL', async () => {
+    const req = makeReq({
+      params: { id: 'user-1' },
+      user: { ...owner, id: 'someone-else' },
+      body: { name: 'New Name' },
+    });
+    const res = makeRes();
+    const next = vi.fn() as NextFunction;
+
+    await updateUserFromId(req, res, next);
+
+    expect(next).toHaveBeenCalledWith(expect.objectContaining({ status: 403 }));
+    expect(updateUserByIdMock).not.toHaveBeenCalled();
+  });
+
+  it('updates and responds with the user when the caller owns the record', async () => {
+    const updated = { ...owner, email: 'new@example.com', name: 'New Name' };
+    updateUserByIdMock.mockResolvedValue(updated);
+    const req = makeReq({
+      params: { id: 'user-1' },
+      user: owner,
+      body: { email: 'new@example.com', name: 'New Name' },
+    });
+    const res = makeRes();
+    const next = vi.fn() as NextFunction;
+
+    await updateUserFromId(req, res, next);
+
+    expect(updateUserByIdMock).toHaveBeenCalledWith('user-1', {
+      email: 'new@example.com',
+      name: 'New Name',
+    });
+    expect(res.json).toHaveBeenCalledWith(updated);
+    expect(next).not.toHaveBeenCalled();
+  });
+
+  it('forwards a 404 AppError when the user does not exist', async () => {
+    updateUserByIdMock.mockResolvedValue(null);
+    const req = makeReq({ params: { id: 'user-1' }, user: owner, body: { name: 'New Name' } });
+    const res = makeRes();
+    const next = vi.fn() as NextFunction;
+
+    await updateUserFromId(req, res, next);
+
+    expect(next).toHaveBeenCalledWith(expect.objectContaining({ status: 404 }));
+    expect(res.json).not.toHaveBeenCalled();
+  });
+
+  it('forwards errors from the query layer to next(err)', async () => {
+    const dbError = new Error('connection lost');
+    updateUserByIdMock.mockRejectedValue(dbError);
+    const req = makeReq({ params: { id: 'user-1' }, user: owner, body: { name: 'New Name' } });
+    const res = makeRes();
+    const next = vi.fn() as NextFunction;
+
+    await updateUserFromId(req, res, next);
+
+    expect(next).toHaveBeenCalledWith(dbError);
   });
 });

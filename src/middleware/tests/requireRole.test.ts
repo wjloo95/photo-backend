@@ -6,6 +6,7 @@ import { User, UserRole } from '../../types';
 const makeUser = (role: UserRole): User => ({
   id: 'user-1',
   email: 'someone@example.com',
+  name: 'Someone',
   role,
   providerId: 'auth0|abc123',
   joinedAt: new Date('2026-01-01T00:00:00Z'),

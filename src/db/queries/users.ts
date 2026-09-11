@@ -1,21 +1,41 @@
 import { pool } from '../../config/database';
 import { User, UserRole } from '../../types';
-import { AppError } from '../../types/AppError';
 
 export async function getUserByProviderId(providerId: string): Promise<User | null> {
   const result = await pool.query<User>(
-    'SELECT id, email, role, provider_id AS "providerId", joined_at AS "joinedAt" FROM users WHERE provider_id = $1',
+    'SELECT id, email, name, role, provider_id AS "providerId", joined_at AS "joinedAt" FROM users WHERE provider_id = $1',
     [providerId],
+  );
+  return result.rows[0] ?? null;
+}
+
+export interface UpdateUserFields {
+  email: string;
+  name: string;
+}
+
+export async function updateUserById(
+  userId: string,
+  fields: Partial<UpdateUserFields>,
+): Promise<User | null> {
+  const { email, name } = fields;
+
+  const result = await pool.query<User>(
+    `UPDATE users
+     SET email = COALESCE($2, email),
+         name = COALESCE($3, name)
+     WHERE id = $1
+     RETURNING id, email, name, role, provider_id AS "providerId", joined_at AS "joinedAt"`,
+    [userId, email, name],
   );
   return result.rows[0] ?? null;
 }
 
 export interface InsertUserFromWebhookInput {
   email: string;
+  name: string;
   role: UserRole;
   providerId: string;
-  // Required when role === UserRole.photographer; ignored for clients.
-  businessName?: string;
 }
 
 /**
@@ -32,27 +52,20 @@ export interface InsertUserFromWebhookInput {
  * in a `finally` block so the connection goes back to the pool either way.
  */
 export async function insertUserFromWebhook(input: InsertUserFromWebhookInput): Promise<User> {
-  if (input.role === UserRole.photographer && !input.businessName) {
-    throw new AppError('businessName is required for photographer signups', 400);
-  }
-
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
 
     const userResult = await client.query<User>(
-      `INSERT INTO users (email, role, provider_id)
-       VALUES ($1, $2, $3)
-       RETURNING id, email, role, provider_id AS "providerId", joined_at AS "joinedAt"`,
-      [input.email, input.role, input.providerId],
+      `INSERT INTO users (email, name, role, provider_id)
+       VALUES ($1, $2, $3, $4)
+       RETURNING id, email, name, role, provider_id AS "providerId", joined_at AS "joinedAt"`,
+      [input.email, input.name, input.role, input.providerId],
     );
     const createdUser = userResult.rows[0];
 
     if (input.role === UserRole.photographer) {
-      await client.query('INSERT INTO photographers (user_id, business_name) VALUES ($1, $2)', [
-        createdUser.id,
-        input.businessName,
-      ]);
+      await client.query('INSERT INTO photographers (user_id) VALUES ($1)', [createdUser.id]);
     }
 
     await client.query('COMMIT');
