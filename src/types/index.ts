@@ -144,17 +144,21 @@ export interface PhotoAlbum {
  * Conversation — one per photographer–client pair.
  * Auto-created in the same transaction as the Client record on invite acceptance.
  *
- * mostRecentMessageId and numberofUnread are denormalised for inbox performance:
+ * mostRecentMessageId and the unread counters are denormalised for inbox performance:
  * - mostRecentMessageId avoids a subquery to find the latest message.
- * - numberOfUnread avoids a COUNT query on every inbox load.
- * Both must be kept in sync when messages are sent/read.
+ * - unreadForPhotographer/unreadForClient avoid a COUNT query on every inbox load.
+ * All must be kept in sync when messages are sent/read.
+ *
+ * The unread counters are per participant: a send increments only the
+ * recipient's side, and marking a conversation read zeroes only the caller's.
  */
 export interface Conversation {
   id: string;
   photographerId: string;               // FK → Photographer.userId
   clientId: string;                     // FK → Client.userId
   mostRecentMessageId: string | null;   // FK → Message.id — null until first message
-  numberOfUnread: number;               // denormalised counter
+  unreadForPhotographer: number;        // denormalised counter — unread by the photographer
+  unreadForClient: number;              // denormalised counter — unread by the client
   lastMessageAt: Date | null;           // denormalised for inbox sort order
   createdAt: Date;
 }

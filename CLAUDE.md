@@ -63,6 +63,6 @@ TTL targets from architecture decisions: album photo list 300s, album metadata 9
 
 All PKs are UUIDs (`gen_random_uuid()`). All timestamps use `TIMESTAMPTZ`. `photographer.user_id` and `client.user_id` are both PK and FK to `users` — enforcing the 1:1 relationship at the schema level.
 
-Two denormalised fields on `conversations` (`most_recent_message_id`, `number_of_unread`) must be kept in sync by message send/read handlers — they exist to avoid subqueries on every inbox load.
+Denormalised fields on `conversations` (`most_recent_message_id`, `unread_for_photographer`, `unread_for_client`) must be kept in sync by message send/read handlers — they exist to avoid subqueries on every inbox load. The unread counters are per participant: a send increments only the recipient's side, marking read zeroes only the caller's.
 
 TypeScript interfaces in `src/types/index.ts` mirror columns 1:1 (snake_case in DB → camelCase in TS). Nullable DB columns are typed `T | null`.

@@ -26,6 +26,7 @@ import {
 import { photoQueue, PhotoJobName } from '../jobs/queues/photoQueue';
 import fs from 'node:fs/promises';
 import cache from '../cache';
+import { parsePaginationParam } from '../utils/pagination';
 
 const router = Router();
 
@@ -220,18 +221,10 @@ export const createAlbumPhotosBatch: RequestHandler = async (req, res, next) => 
 // GET /albums/:id/photos — both roles, same ownership rule as GET /albums/:id.
 // Paginated via ?page=&limit= (both optional) — offset = (page - 1) * limit.
 // limit is capped at MAX_PHOTOS_PAGE_SIZE so a caller can't request an
-// unbounded page in one request; either param falls back to its default
-// when missing or not a positive integer, rather than erroring.
+// unbounded page in one request; see parsePaginationParam for the
+// fallback rules on missing/invalid params.
 const DEFAULT_PHOTOS_PAGE_SIZE = 20;
 const MAX_PHOTOS_PAGE_SIZE = 100;
-
-function parsePaginationParam(value: unknown, fallback: number, max?: number): number {
-  const parsed = Number(value);
-  if (!Number.isInteger(parsed) || parsed < 1) {
-    return fallback;
-  }
-  return max ? Math.min(parsed, max) : parsed;
-}
 
 export const getAlbumPhotos: RequestHandler = async (req, res, next) => {
   try {
