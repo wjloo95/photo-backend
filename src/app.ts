@@ -30,6 +30,7 @@ import { auth, loadUser } from './middleware/auth';
 import usersRouter from './routes/users';
 import photographersRouter from './routes/photographers';
 import invitesRouter from './routes/invites';
+import albumsRouter from './routes/albums';
 
 const app = express();
 
@@ -83,6 +84,7 @@ app.use(loadUser);
 // ── Routes ────────────────────────────────────────────────────
 // Mount your routers here as you build them.
 app.use('/photographers', photographersRouter);
+app.use('/albums', albumsRouter);
 
 // TODO: remove before shipping — triggers errorHandler with different error shapes
 app.get('/test-error', (_req, _res, next) => {

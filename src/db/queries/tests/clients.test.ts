@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { getPhotographerClientsByUserId } from '../clients';
+import { getPhotographerClientsByUserId, getClientByUserId } from '../clients';
 
 const { mockQuery } = vi.hoisted(() => ({ mockQuery: vi.fn() }));
 vi.mock('../../../config/database', () => ({
@@ -34,5 +34,26 @@ describe('getPhotographerClientsByUserId', () => {
     const result = await getPhotographerClientsByUserId('photog-1');
 
     expect(result).toEqual([]);
+  });
+});
+
+describe('getClientByUserId', () => {
+  it('maps a found row to the Client shape', async () => {
+    mockQuery.mockResolvedValue({
+      rows: [{ user_id: 'client-1', photographer_id: 'photog-1' }],
+    });
+
+    const result = await getClientByUserId('client-1');
+
+    expect(mockQuery).toHaveBeenCalledWith(expect.stringContaining('FROM clients'), ['client-1']);
+    expect(result).toEqual({ userId: 'client-1', photographerId: 'photog-1' });
+  });
+
+  it('returns null when no client matches the id', async () => {
+    mockQuery.mockResolvedValue({ rows: [] });
+
+    const result = await getClientByUserId('missing-id');
+
+    expect(result).toBeNull();
   });
 });
