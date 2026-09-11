@@ -26,6 +26,7 @@ import express from 'express';
 import helmet from 'helmet';
 import cors from 'cors';
 import { errorHandler } from './middleware/errorHandler';
+import { auth } from './middleware/auth';
 
 const app = express();
 
@@ -40,6 +41,8 @@ app.use(cors());
 // Parse incoming JSON request bodies.
 // Without this, req.body is always undefined.
 app.use(express.json());
+
+app.use(auth);
 
 // ── Health check ──────────────────────────────────────────────
 // Simple endpoint used by the AWS ALB to confirm the server is alive.
@@ -56,7 +59,7 @@ app.get('/health', (_req, res) => {
 app.get('/test-error', (_req, _res, next) => {
   const err = Object.assign(new Error('something went wrong'), { status: 422 });
   next(err);
-})
+});
 
 app.use(errorHandler);
 
