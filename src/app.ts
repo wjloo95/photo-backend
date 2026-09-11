@@ -25,6 +25,7 @@
 import express from 'express';
 import helmet from 'helmet';
 import cors from 'cors';
+import { errorHandler } from './middleware/errorHandler';
 
 const app = express();
 
@@ -58,5 +59,6 @@ app.get('/test-error', (_req, _res, next) => {
   next(err)
 })
 
+app.use(errorHandler);
 
 export default app;
