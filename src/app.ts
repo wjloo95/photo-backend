@@ -26,7 +26,7 @@ import express from 'express';
 import helmet from 'helmet';
 import cors from 'cors';
 import { errorHandler } from './middleware/errorHandler';
-import { auth } from './middleware/auth';
+import { auth, loadUser } from './middleware/auth';
 
 const app = express();
 
@@ -42,14 +42,19 @@ app.use(cors());
 // Without this, req.body is always undefined.
 app.use(express.json());
 
-app.use(auth);
-
 // ── Health check ──────────────────────────────────────────────
 // Simple endpoint used by the AWS ALB to confirm the server is alive.
+// Mounted before auth — the ALB has no JWT to send.
 // Returns 200 with no body — that's all the load balancer needs.
 app.get('/health', (_req, res) => {
   res.sendStatus(200);
 });
+
+// auth verifies the JWT and attaches the decoded payload to req.auth.
+// loadUser resolves it to the full DB user and attaches it to req.user.
+// Both call next(err) on failure, handled by errorHandler below.
+app.use(auth);
+app.use(loadUser);
 
 // ── Routes ────────────────────────────────────────────────────
 // Mount your routers here as you build them.
