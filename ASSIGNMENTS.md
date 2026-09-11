@@ -225,20 +225,48 @@
 
 > Self-contained. No dependencies on Phases 5–7. Left last because it doesn't block testing any core flows.
 
-### 8.1 — Template & Question CRUD
+### 8.1 — Template CRUD
 
-- [ ] `POST /templates`, `GET /templates/:id`, `PATCH /templates/:id`, `DELETE /templates/:id`
-- [ ] `POST /templates/:id/questions` — **design decision:** does the client send an `order` value, or does the server append to the end of the existing list?
-- [ ] `PATCH /templates/:id/questions/:id`, `DELETE /templates/:id/questions/:id`
+**Decided up front:**
+
+- **A template and its questions are created in one request, and edited by replacing the whole set.** There is no such thing as adding, editing, or deleting a single question — the photographer builds the form in the UI and submits it whole. This is what makes `"order"` trivial: it is the index of the submitted array. Nothing computes `MAX("order") + 1`, so the read-then-write race that plagues incremental ordering never arises, and reordering is just resubmitting the array in a different sequence.
+- **Templates are always editable; only deletion is blocked.** Migration 019 made responses snapshot the questions they were assigned, so a replace-all `PUT` can recreate question rows without affecting any form already in a client's hands. `DELETE` still returns `409` while responses exist — not to protect question ids, but because a response is a standalone record that must outlive its template. `form_responses.template_id` is `ON DELETE RESTRICT`, so the database enforces it; the `409` is the error message on top of the constraint, which is why it is a state conflict rather than a `403`.
+- **The delete check is one existence query** — `SELECT 1 FROM form_responses WHERE template_id = $1`, `templateHasResponses` in `db/queries/templates.ts`. It used to guard `PUT` as well; that caller is gone.
+- **Max 25 questions per template.** Rejected with `400` before any transaction opens, so one request can't insert unbounded rows.
+- **`multiple_choice` is gone from `answer_type`** (migration 018) — the enum offered it but `form_questions` has nowhere to store the choices, so such an answer could never be validated against anything.
+- **Templates are not cached in this phase.** They're read-heavy and now near-immutable, so they'd cache well — but add it only if the read path actually shows up hot, not on spec.
+
+- [x] `POST /templates` — creates the template *and all of its questions* in one transaction (same shape as the invite-acceptance transaction in Phase 3: insert parent, insert children, commit or roll back as a unit):
+  ```
+  { "name": "Wedding intake", "questions": [
+      { "content": "What time is the ceremony?", "answerType": "text" },
+      { "content": "Date of the shoot?",         "answerType": "date" }
+  ]}
+  ```
+  - `"order"` is written as the array index — 0-based and dense by construction. Migration 018 adds `UNIQUE (template_id, "order")` to enforce it
+  - Validate the body with `zod` (already a dependency, see `src/config/env.ts`): non-empty `name`, 1–25 questions, non-empty `content` on each, `answerType` within the enum. One parse, `400` before the transaction opens
+- [x] `GET /templates/:id` — embeds its questions in `"order"` sequence (`{ ...template, questions: [...] }`). A template without them can't render a form, and there is no separate questions endpoint
+- [x] `GET /photographers/:id/templates` — list a photographer's own templates. In the architecture doc's endpoint table but was missing from this phase; without it a photographer can't find their templates at all
+- [x] `PUT /templates/:id` — replace name + full question set, in one transaction: delete the existing questions, insert the new array. No lock check
+  - **Why `PUT` and not `PATCH`:** the body is the complete new state of the template, not a diff of changed fields
+- [x] `DELETE /templates/:id` — `409` while any response references it. `ON DELETE CASCADE` on `form_questions.template_id` (migration 010) removes the questions
 
 ### 8.2 — Response Lifecycle
 
-- [ ] `POST /templates/:id/responses` — photographer assigns template to a client. Creates `form_responses` row with `submitted_at = NULL`
-- [ ] `GET /responses/:id` — view a response (both roles)
-- [ ] `POST /responses/:id/answers` — client saves an answer. Validate that the `question_id` belongs to the template of this response.
-- [ ] `PATCH /responses/:id/answers/:id` — client edits a saved answer. Must reject if `submitted_at` is already set.
-- [ ] `PATCH /responses/:id/submit` — client submits. Set `submitted_at = NOW()`. After this, the response is locked.
-- [ ] `GET /clients/:id/responses` — list all responses for a client
+**Decided up front:**
+
+- **A response is self-contained (migration 019).** It carries a frozen copy of its template's questions in a `questions` JSONB column, taken at assign time, and its answers in an `answers` JSONB object keyed by question id. It renders without ever reading `form_questions`, which is what frees templates to be edited afterwards.
+- **Saving an answer is a JSONB merge.** `POST /responses/:id/answers` does `SET answers = answers || jsonb_build_object($2, $3)`, so one key is inserted-or-overwritten in a single expression and a save-as-you-go client can re-send the same question without tracking what it has already saved. `PATCH /responses/:id/answers/:id` is therefore dropped — it has been removed from the architecture doc's endpoint table too.
+- **The submitted-form lock lives in the SQL, not the handler.** Both write statements carry `AND submitted_at IS NULL`, so a submit landing between the handler's `409` check and the write cannot be written past — the check-then-write gap is closed rather than narrowed. A `null` return means "not writable"; the handler, which loaded the row moments earlier, turns it into a `409`.
+- **Submit does not require a complete form.** An unanswered question simply has no key in `answers`; there is no `required` concept. Submit only flips `submitted_at`.
+- **The same template may be assigned to the same client more than once.** No `UNIQUE (template_id, client_id)` on `form_responses` — each assignment is its own instance (one questionnaire per shoot), distinguished by `assigned_at`. (Renamed from `started_at` in migration 019: it is set when the photographer assigns, not when the client starts.)
+- **Who can read a response:** the client it belongs to, plus the photographer who owns the underlying template — `form_responses` has no `photographer_id`, so that check is a join through `form_templates`. Anyone else gets `403`. Same rule for `GET /clients/:id/responses`. Write access is narrower: the client alone, since a photographer may read a response but never answer it.
+
+- [x] `POST /templates/:id/responses` — photographer assigns template to a client. One `INSERT ... SELECT` that creates the row and snapshots the questions in the same statement, with `submitted_at = NULL`
+- [x] `GET /responses/:id` — view a response (owning client or the template's photographer, see above). One query: the row carries the questions and the answers
+- [x] `POST /responses/:id/answers` — client saves an answer (merge, see above). Validate that the `questionId` is in this response's own snapshot — an array lookup, not a query — and reject if `submitted_at` is already set
+- [x] `PATCH /responses/:id/submit` — client submits. Set `submitted_at = NOW()`. After this, the response is locked: no further answer writes
+- [x] `GET /clients/:id/responses` — list all responses for a client, as summaries without the question snapshots
 
 ---
 

@@ -10,33 +10,15 @@
  */
 
 import { expiryQueue, ExpiryJobName } from '../queues/expiryQueue';
-// TODO (ASSIGNMENTS.md 5.3) — you'll need:
+// upsertJobScheduler rather than the older `queue.add(name, data, { repeat })`.
+// "Upsert" is the operative word: worker.ts calls this on every process start —
+// deploys, restarts, a crash coming back — and calling it again with the same
+// schedulerId updates the existing schedule instead of adding a second one. The
+// `.add()` + repeat form has no such identity, so re-registering on each restart
+// accumulates duplicate schedules and the job starts firing several times a day.
 //
-// The part worth thinking through before you write this:
-//
-// BullMQ has two ways to create a repeating job: the older
-// `queue.add(name, data, { repeat: { pattern } })`, and the newer
-// `queue.upsertJobScheduler(schedulerId, repeatOpts, jobTemplate)`. Use the
-// second — "upsert" is the operative word, since calling it again with the
-// same schedulerId updates the existing schedule instead of creating a
-// duplicate one. That matters because this function runs on every worker
-// startup (deploys, restarts, crashes and comes back) — with the older
-// `.add()` + `repeat` approach, re-registering the same cron job on every
-// restart risks accumulating duplicate schedules; upsertJobScheduler is
-// built specifically to make "call this every time the process starts"
-// safe.
-//
-//
-// Steps:
-//   1. Once per ExpiryJobName (Warn90Days, Warn30Days, Warn7Days,
-//      DeleteExpired):
-//        expiryQueue.upsertJobScheduler(
-//          <the job name, used as the schedulerId>,
-//          { pattern: '0 8 * * *' },
-//          { name: <the job name>, data: {} },
-//        )
-//   2. Export this as a named function — worker.ts needs to import and
-//      call it once at startup.
+// The job name doubles as the schedulerId for exactly that reason: it is stable
+// across restarts, which is what makes the upsert idempotent.
 export async function registerExpirySchedules(): Promise<void> {
   await expiryQueue.upsertJobScheduler(
     ExpiryJobName.DeleteExpired,

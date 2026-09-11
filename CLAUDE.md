@@ -13,12 +13,17 @@ npm run build        # compile to dist/
 
 Local environment setup before first run:
 ```bash
-docker run --name sys-photo-db -e POSTGRES_PASSWORD=password -p 5432:5432 -d postgres
+# host port 5433, not 5432 — leaves a locally installed Postgres alone
+docker run --name sys-photo-db -e POSTGRES_PASSWORD=postgres -p 5433:5432 -d postgres
 docker exec -it sys-photo-db psql -U postgres -c "CREATE DATABASE sys_photo;"
 cp .env.example .env   # then fill in DATABASE_URL and REDIS_URL at minimum
 npm run migrate
 npm run dev
 ```
+
+The matching `DATABASE_URL` is `postgres://postgres:postgres@localhost:5433/sys_photo`.
+If the container already exists but is stopped, `docker start sys-photo-db` is
+enough — no need to recreate it.
 
 ## Architecture
 
@@ -34,7 +39,7 @@ This is a learning project. The scaffold is complete; the application logic is n
 |---|---|
 | `src/config/` — env validation, DB pool, Redis client | `src/routes/` — all 43 route handlers |
 | `src/types/index.ts` — all 12 entity interfaces + enums | `src/middleware/` — auth, requireRole, errorHandler |
-| `src/db/migrations/` — all 14 SQL migrations + runner | `src/db/queries/` — all SQL query functions |
+| `src/db/migrations/` — all 19 SQL migrations + runner | `src/db/queries/` — all SQL query functions |
 | `src/jobs/queues/` — BullMQ queue shells | `src/jobs/processors/` — photo processing, expiry pipeline |
 | `src/cache/index.ts` — get/set/del cache utilities | `src/jobs/schedulers/` — cron schedule registration |
 | `src/app.ts`, `src/server.ts` — Express shell | `src/jobs/worker.ts` — BullMQ worker process |
@@ -59,9 +64,19 @@ TTL targets from architecture decisions: album photo list 300s, album metadata 9
 
 ### Schema summary
 
-12 entities in dependency order: `users` → `photographers` / `clients` → `albums` + `photos` → `photo_albums` (join) → `conversations` → `messages` → `form_templates` → `form_questions` → `form_responses` → `form_answers` → `invites`.
+11 entities in dependency order: `users` → `photographers` / `clients` → `albums` + `photos` → `photo_albums` (join) → `conversations` → `messages` → `form_templates` → `form_questions` → `form_responses` → `invites`. (`form_answers` was dropped in migration 019 — see below.)
 
 All PKs are UUIDs (`gen_random_uuid()`). All timestamps use `TIMESTAMPTZ`. `photographer.user_id` and `client.user_id` are both PK and FK to `users` — enforcing the 1:1 relationship at the schema level.
+
+A `form_responses` row snapshots its template's questions into a `questions`
+JSONB column at assign time, and holds its answers in an `answers` JSONB object
+keyed by question id. A response therefore renders without reading
+`form_questions`, which is why `PUT /templates/:id` has no lock: editing a
+template cannot change a form already in a client's hands. `DELETE` is still
+refused while responses exist (`ON DELETE RESTRICT` on
+`form_responses.template_id`) because a response must outlive its template.
+Both response write paths carry `AND submitted_at IS NULL` in the writing
+statement, so the submitted-form lock is atomic rather than check-then-write.
 
 Denormalised fields on `conversations` (`most_recent_message_id`, `unread_for_photographer`, `unread_for_client`) must be kept in sync by message send/read handlers — they exist to avoid subqueries on every inbox load. The unread counters are per participant: a send increments only the recipient's side, marking read zeroes only the caller's.
 

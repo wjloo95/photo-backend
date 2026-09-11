@@ -40,9 +40,22 @@ The dependency order in this project:
 009 form_templates        (→ photographers)
 010 form_questions        (→ form_templates)
 011 form_responses        (→ form_templates, clients)
-012 form_answers          (→ form_responses, form_questions)
+012 form_answers          (→ form_responses, form_questions)  [dropped in 019]
 013 invites               (→ photographers)
 014 indexes               (no new tables — adds indexes to existing tables)
+```
+
+Migrations 015 onward alter what is already there rather than adding tables:
+
+```
+015 users.name added, photographers.business_name dropped
+016 photos gains width/height
+017 conversations.number_of_unread split per participant
+018 form_questions written as a set: UNIQUE (template_id, "order"),
+    multiple_choice dropped from answer_type
+019 form_responses snapshot their questions and inline their answers as
+    JSONB; form_answers dropped; started_at renamed assigned_at;
+    template_id FK becomes ON DELETE RESTRICT
 ```
 
 ---

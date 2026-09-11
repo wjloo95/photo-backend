@@ -44,14 +44,15 @@ export interface InsertUserFromWebhookInput {
  * Inserts a `users` row and, if role is 'photographer', a matching
  * `photographers` row — atomically, as one transaction.
  *
- * TODO: implement using a single checked-out client (`pool.connect()`), not
- * `pool.query`, so both statements run on the same connection:
- *   1. `client.query('BEGIN')`
- *   2. INSERT INTO users (...) VALUES ($1, $2, $3) RETURNING ... — parameterised
- *   3. if role === UserRole.photographer, INSERT INTO photographers (...)
- *   4. `client.query('COMMIT')`
- * On any error, `client.query('ROLLBACK')` then rethrow. Always `client.release()`
- * in a `finally` block so the connection goes back to the pool either way.
+ * Runs on a single checked-out client rather than `pool.query`, because the
+ * statements have to share one connection to share one transaction — two
+ * `pool.query` calls can land on two different connections, and BEGIN on one
+ * of them means nothing to the other.
+ *
+ * `client.release()` sits in a `finally` so the connection returns to the pool
+ * whichever way this exits. Note that releasing does not roll back: the
+ * explicit ROLLBACK in the catch is what stops the next borrower inheriting an
+ * open transaction.
  */
 export async function insertUserFromWebhook(input: InsertUserFromWebhookInput): Promise<User> {
   const client = await pool.connect();
@@ -88,28 +89,23 @@ export interface AcceptInviteInput {
   inviteToken: string;
 }
 
-// TODO (ASSIGNMENTS.md 3.3 — "the hardest transaction in the app"): a client
-// accepting an invite link. One transaction (same pool.connect() pattern as
-// insertUserFromWebhook above) must create all FOUR of:
-//   1. users row (role = 'client')
-//   2. clients row — photographer_id comes from the invite, never the request
-//   3. conversations row, per D-20 (auto-created alongside the client)
-//   4. invites row updated: status = 'accepted', accepted_at = NOW()
-// If any insert fails, all four roll back — no partial state.
+// A client accepting an invite link. One transaction creates all four of the
+// users row, the clients row (photographer_id from the invite, never from the
+// request), the conversation D-20 auto-creates alongside a client, and the
+// invite's own status update — or none of them.
 //
-// Design decision to make first: how do you look up + validate the invite
-// inside this transaction? Two people could redeem the same token at the
-// same instant (double-click, retry). A plain SELECT (e.g. reusing
-// getInviteByToken from db/queries/invites.ts, which runs on the pool
-// outside this transaction) doesn't stop both from reading "pending" before
-// either writes "accepted." Locking the row within this transaction (e.g.
-// `SELECT * FROM invites WHERE token = $1 FOR UPDATE`) does. Decide which
-// approach you want and be consistent — same spirit as the auth.ts /
-// requireRole design decision in Phase 1.3.
+// The invite is loaded with SELECT ... FOR UPDATE rather than by reusing
+// getInviteByToken from queries/invites.ts, and that is the load-bearing
+// decision here. Two people redeeming the same token at the same instant — a
+// double-click, a retry — would both read status 'pending' before either
+// wrote 'accepted', and both would get an account. FOR UPDATE holds a row lock
+// for the rest of the transaction, so the second reader blocks until the first
+// commits and then sees 'accepted'. getInviteByToken runs on the pool, outside
+// this transaction, and could not take that lock.
 //
-// Once you have the invite, re-check the same conditions validateInvite
-// checks (exists, not already accepted/expired, not past expiresAt) — don't
-// assume the client called GET /invites/validate right before this ran.
+// The status and expiry conditions are re-checked here even though
+// GET /invites/validate checks the same things: nothing guarantees the client
+// called it, or that the invite was still valid when they did.
 export async function insertClientFromInvite(input: AcceptInviteInput): Promise<User> {
   const client = await pool.connect();
   try {

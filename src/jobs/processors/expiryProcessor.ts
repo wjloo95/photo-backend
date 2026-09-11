@@ -23,55 +23,18 @@ import {
 import { ExpiryJobName } from '../queues/expiryQueue';
 import { processEachSafely } from './processEachSafely';
 import { v2 as cloudinary } from 'cloudinary';
-// TODO (ASSIGNMENTS.md 5.3) — you'll need:
+// Dispatch is on job.name alone. The warning cases are near-identical by
+// design — getAlbumsNeedingWarning(N) already encodes the "catch up on a missed
+// run" logic (see queries/albums.ts), so all that is left here is marking each
+// album warned so the next run skips it.
 //
+// The delete case is the one with ordering constraints, documented inline
+// below: photos are cleaned up before their album row, and a photo is only
+// destroyed when this was its last remaining album.
 //
-// Two things worth thinking through before you write this:
-//
-// 1. "Within the warning window" has a naive reading and a robust one.
-//    Naive: access_expires_at falls on exactly N days from today — but if
-//    this cron doesn't fire on the exact right day (worker was down, a
-//    deploy delayed it past midnight UTC, whatever), that album's warning
-//    is silently skipped forever, since tomorrow it's N-1 days out and no
-//    longer matches. Robust: access_expires_at <= NOW() + INTERVAL
-//    'N days' AND warned_N_at IS NULL — once true it stays true until you
-//    mark it warned, so a missed run just catches up on the next one. The
-//    second is also why "read which albums qualify" and "mark them warned"
-//    need to happen close together — two runs racing before the first
-//    run's write lands could both see the same album as unwarned and send
-//    the warning twice.
-//
-// 2. delete-expired's spec says "delete files from Cloudinary, then delete
-//    album rows from DB" — but photo_albums.album_id cascades on album
-//    delete (migration 006), while `photos` itself does NOT cascade from
-//    `albums` (the chain is photos -> photo_albums -> albums; deleting an
-//    album only removes the join row). Deleting just the album row leaves
-//    that album's `photos` rows behind, permanently orphaned — nothing
-//    references them, but nothing cleans them up either. Decide whether to
-//    also delete each photo's `photos` row once its album is gone — and if
-//    a photo can belong to more than one album (see addAlbumPhoto in
-//    routes/albums.ts), whether that deletion should only happen when this
-//    was the photo's *last* remaining album (getAlbumOwnersForPhoto tells
-//    you that), so expiring one shoot album doesn't delete a photo the
-//    photographer also placed in a still-active portfolio album.
-//
-// Steps, dispatched on job.name:
-//   Warn90Days / Warn30Days / Warn7Days:
-//     1. getAlbumsNeedingWarning(90 | 30 | 7)
-//     2. For each album: send the warning (not built anywhere else in this
-//        codebase yet — decide what that means for now, e.g. just logging)
-//        and markAlbumWarned(album.id, <the matching field>)
-//   DeleteExpired:
-//     1. getExpiredAlbums()
-//     2. For each album: find its photos, cloudinary.uploader.destroy each
-//        photo's basePath (the delete counterpart to .upload(), same v2
-//        import as photoProcessor.ts)
-//     3. deleteAlbumById(album.id) — then resolve the orphaned-photos
-//        question from point 2 above
-//
-// Note for later: this needs its own BullMQ Worker in worker.ts, separate
-// from the photoQueue one — a Worker listens to exactly one queue, and
-// this queue is 'expiry', not 'photo-processing'.
+// This queue needs its own BullMQ Worker in worker.ts, separate from the
+// photoQueue one — a Worker listens to exactly one queue, and this is 'expiry',
+// not 'photo-processing'.
 export async function processExpiryJob(jobName: string): Promise<void> {
   switch (jobName) {
     case ExpiryJobName.DeleteExpired: {

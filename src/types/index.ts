@@ -33,9 +33,10 @@ export enum InviteStatus {
   expired = 'expired',
 }
 
+// multiple_choice was removed in migration 018 — form_questions has nowhere
+// to store the choices, so an answer of that type could not be validated.
 export enum AnswerType {
   text = 'text',
-  multipleChoice = 'multiple_choice',
   date = 'date',
   boolean = 'boolean',
 }
@@ -194,6 +195,10 @@ export interface FormTemplate {
 /**
  * FormQuestion — a single question within a template.
  * order controls display sequence.
+ *
+ * Questions are created and replaced as a whole set alongside their template,
+ * never one at a time, so order is just the index of the submitted array —
+ * dense, 0-based, and unique per template (migration 018).
  */
 export interface FormQuestion {
   id: string;
@@ -206,24 +211,34 @@ export interface FormQuestion {
 /**
  * FormResponse — one instance of a template assigned to a specific client.
  * submitted_at = NULL means the client has started but not yet submitted.
+ *
+ * Self-contained by design (migration 019): a response carries a frozen copy
+ * of the questions it was assigned, so it renders without ever reading its
+ * template, and the photographer stays free to edit that template afterwards.
+ * templateId remains as provenance and as the path to the owning photographer.
  */
 export interface FormResponse {
   id: string;
   templateId: string;           // FK → FormTemplate.id
   clientId: string;             // FK → Client.userId
-  startedAt: Date;
+  /** Frozen copy of the template's questions, taken when the response was created. */
+  questions: FormQuestion[];
+  /** Answers keyed by question id. A question with no entry is unanswered. */
+  answers: FormAnswerMap;
+  assignedAt: Date;
   submittedAt: Date | null;     // NULL = in progress
 }
 
 /**
- * FormAnswer — a client's answer to one question in a response.
+ * A response's answers: question id → the client's answer, stored as TEXT for
+ * every answer type (booleans as 'true'/'false', dates as ISO strings), with
+ * parsing left to application code.
+ *
+ * A missing key is what "unanswered" means — there is no empty-string state,
+ * and no `required` concept anywhere in the schema, so a form can be submitted
+ * with any subset of its questions answered.
  */
-export interface FormAnswer {
-  id: string;
-  responseId: string;   // FK → FormResponse.id
-  questionId: string;   // FK → FormQuestion.id
-  content: string;
-}
+export type FormAnswerMap = Record<string, string>;
 
 // ─────────────────────────────────────────────
 // Invites

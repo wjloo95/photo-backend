@@ -159,25 +159,39 @@ PostgreSQL via AWS RDS. All entities use UUID primary keys. Foreign keys enforce
 | id | uuid | PK |
 | template_id | uuid | FK → Form Template |
 | content | text | |
-| answer_type | enum('text', 'multiple_choice', 'date', 'boolean') | |
-| order | integer | |
+| answer_type | enum('text', 'date', 'boolean') | multiple_choice dropped in migration 018 — nowhere to store the choices |
+| order | integer | index of the submitted array; unique per template, dense, 0-based |
 
 #### Form Response
 | Field | Type | Notes |
 |---|---|---|
 | id | uuid | PK |
-| template_id | uuid | FK → Form Template |
+| template_id | uuid | FK → Form Template, `ON DELETE RESTRICT` — provenance and the path to the owning photographer |
 | client_id | uuid | FK → Client |
-| started_at | timestamp | |
+| questions | jsonb | frozen copy of the template's questions, taken at assign time (migration 019) |
+| answers | jsonb | `{ "<question_id>": "<answer>" }` — a missing key means unanswered |
+| assigned_at | timestamp | set when the photographer assigns, not when the client starts |
 | submitted_at | timestamp | nullable — NULL means in progress |
 
-#### Form Answer
-| Field | Type | Notes |
-|---|---|---|
-| id | uuid | PK |
-| response_id | uuid | FK → Form Response |
-| question_id | uuid | FK → Form Question |
-| content | text | |
+A response is **self-contained**: it renders from its own snapshot and never
+reads `form_questions`. A template is a drafting surface, a response is a
+record, and the snapshot is the seam between them — once a response exists,
+the template can no longer change what that client was asked.
+
+That property is what removes the old edit lock. Answers used to reference
+`form_questions` rows, which a replace-all `PUT` deletes and recreates, so an
+assigned template had to be frozen and edited by duplication. Nothing
+references question rows any more, so `PUT` is always allowed. `DELETE` is
+still refused while responses exist — not to protect question ids, but because
+a response is a standalone record that must outlive its template. That rule is
+in the database (`ON DELETE RESTRICT`); the 409 is the error message on top of
+it.
+
+The `form_answers` table was dropped in migration 019. Answers are only ever
+read one response at a time, so a table whose sole purpose was hanging ≤25
+strings off a parent row was buying referential integrity that the snapshot
+made redundant, and paying for it with a join, a UNIQUE constraint and a
+cross-entity validation query.
 
 ### Invites
 
@@ -223,7 +237,7 @@ All list endpoints are identity-scoped — filtered server-side by JWT auth toke
 |---|---|---|---|
 | GET | /clients/:id | Get client profile | both |
 | GET | /clients/:id/albums | Get all albums | client |
-| GET | /clients/:id/responses | Get all form responses | both |
+| GET | /clients/:id/responses | Get all form responses (summaries) | both |
 | GET | /clients/:id/conversations | Get client conversation | client |
 
 ### Invites
@@ -261,18 +275,34 @@ All list endpoints are identity-scoped — filtered server-side by JWT auth toke
 ### Forms & Questionnaires
 | Method | Path | Description | Access |
 |---|---|---|---|
-| POST | /templates | Create form template | photographer |
-| GET | /templates/:id | Get single template | photographer |
-| PATCH | /templates/:id | Update template | photographer |
+| POST | /templates | Create template *with all its questions* (max 25) | photographer |
+| GET | /templates/:id | Get single template, questions embedded in `order` | photographer |
+| GET | /photographers/:id/templates | List a photographer's templates | photographer |
+| PUT | /templates/:id | Replace name + full question set | photographer |
 | DELETE | /templates/:id | Delete template | photographer |
-| POST | /templates/:id/questions | Add question | photographer |
-| PATCH | /templates/:id/questions/:id | Edit question | photographer |
-| DELETE | /templates/:id/questions/:id | Remove question | photographer |
 | POST | /templates/:id/responses | Assign template to client | photographer |
 | GET | /responses/:id | Get form response | both |
-| POST | /responses/:id/answers | Save answer | client |
-| PATCH | /responses/:id/answers/:id | Edit saved answer | client |
+| POST | /responses/:id/answers | Save answer (upsert) | client |
 | PATCH | /responses/:id/submit | Submit completed form | client |
+| GET | /clients/:id/responses | List a client's responses (summaries) | both |
+
+Questions have no endpoints of their own: a template and its questions are
+created together and edited by replacing the whole set, so `"order"` is just
+the index of the submitted array.
+
+Access splits by column, not by role. `GET /responses/:id` passes for the
+owning client **or** the template's photographer; the two write endpoints pass
+for the client alone — a photographer may read a response but never answer it.
+`GET /clients/:id/responses` follows the same rule via the client record, and
+returns summaries without question snapshots.
+
+`PUT /templates/:id` has no lock: responses snapshot their questions, so an
+edit cannot reach a form already in a client's hands. `DELETE /templates/:id`
+returns 409 while any response exists, backed by `ON DELETE RESTRICT`.
+
+Both write endpoints carry `AND submitted_at IS NULL` in the statement that
+writes, so the submitted-form lock is enforced atomically rather than by a
+check-then-write pair in the handler.
 
 ---
 
@@ -375,7 +405,7 @@ All list endpoints are identity-scoped — filtered server-side by JWT auth toke
 #### D-09 — Database: AWS RDS (PostgreSQL)
 **Decision:** PostgreSQL via Docker locally. AWS RDS in production.
 
-**Rationale:** 12 entities, complex joins, ACID requirements. RDS chosen to focus learning on application code.
+**Rationale:** 11 entities, complex joins, ACID requirements. RDS chosen to focus learning on application code.
 
 | Why SQL over NoSQL | Why RDS over self-managed |
 |---|---|
@@ -605,7 +635,7 @@ AWS RDS (PostgreSQL)          AWS ElastiCache (Redis)
 6. BullMQ: worker process, photo processing jobs, expiry cron scheduler
 7. Redis: caching layer, cache-aside implementation, event invalidation handlers
 8. Messaging: Conversation auto-creation, Message endpoints, read receipts
-9. Forms: Template, Question, Response, Answer endpoints
+9. Forms: Template, Question, Response endpoints (answers live on the response)
 10. Invites: full invite flow end to end, resend logic
 11. Deployment: EC2, RDS, ElastiCache setup, ALB config, nginx reverse proxy
 

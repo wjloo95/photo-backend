@@ -6,6 +6,7 @@ import { getPendingInvitesByPhotographerId } from '../db/queries/invites';
 import { Album, Photographer, VisibilityType } from '../types';
 import { AppError } from '../types/AppError';
 import cache from '../cache';
+import { getTemplatesByPhotographerId } from '../db/queries/templates';
 
 const router = Router();
 
@@ -114,6 +115,26 @@ export const getPhotographerInvitesFromId: RequestHandler = async (req, res, nex
   }
 };
 
+// GET /photographers/:id/templates — photographer only, own templates only.
+// In the architecture doc's endpoint table but missing from Phase 8's list;
+// without it a photographer has no way to find their own templates at all.
+//
+// Identity-scoped the same way as getPhotographerInvitesFromId above: the :id
+// must be the caller's own. List view only — no questions embedded, and no
+// cache (see routes/templates.ts for why templates aren't cached yet).
+export const getPhotographerTemplatesFromId: RequestHandler = async (req, res, next) => {
+  try {
+    if (req.params.id !== req.user?.id) {
+      return next(new AppError('Forbidden', 403));
+    }
+
+    const templates = await getTemplatesByPhotographerId(req.params.id);
+    res.json(templates);
+  } catch (err) {
+    next(err);
+  }
+};
+
 // PATCH /photographers/:id
 // auth + loadUser already run globally in app.ts for everything mounted
 // after /users, so req.user is populated by the time this handler runs.
@@ -146,6 +167,7 @@ router.get('/:id', getPhotographerFromId);
 router.get('/:id/clients', getPhotographerClientsFromId);
 router.get('/:id/albums', getPhotographerAlbumsFromId);
 router.get('/:id/invites', getPhotographerInvitesFromId);
+router.get('/:id/templates', getPhotographerTemplatesFromId);
 router.patch('/:id', updatePhotographerFromId);
 
 export default router;

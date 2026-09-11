@@ -18,6 +18,14 @@ jest.mock('../../db/queries/invites', () => ({
   getPendingInvitesByPhotographerId: jest.fn(),
 }));
 
+// Mocked for the same reason as the modules above, even though no test here
+// exercises GET /photographers/:id/templates yet: routes/photographers.ts
+// imports it, and the real module pulls in config/database -> config/env,
+// which process.exit(1)s under jest where the env vars aren't set.
+jest.mock('../../db/queries/templates', () => ({
+  getTemplatesByPhotographerId: jest.fn(),
+}));
+
 jest.mock('../../cache', () => ({
   __esModule: true,
   default: { get: jest.fn(), set: jest.fn(), del: jest.fn() },
@@ -28,12 +36,17 @@ import {
   getPhotographerClientsFromId as getPhotographerClientsFromIdHandler,
   getPhotographerAlbumsFromId as getPhotographerAlbumsFromIdHandler,
   getPhotographerInvitesFromId as getPhotographerInvitesFromIdHandler,
+  getPhotographerTemplatesFromId as getPhotographerTemplatesFromIdHandler,
   updatePhotographerFromId as updatePhotographerFromIdHandler,
 } from '../photographers';
-import { getPhotographerByUserId, updatePhotographerByUserId } from '../../db/queries/photographers';
+import {
+  getPhotographerByUserId,
+  updatePhotographerByUserId,
+} from '../../db/queries/photographers';
 import { getPhotographerClientsByUserId } from '../../db/queries/clients';
 import { getPhotographerAlbumsByUserId } from '../../db/queries/albums';
 import { getPendingInvitesByPhotographerId } from '../../db/queries/invites';
+import { getTemplatesByPhotographerId } from '../../db/queries/templates';
 import cache from '../../cache';
 
 const getPhotographerByUserIdMock = getPhotographerByUserId as jest.Mock;
@@ -41,6 +54,7 @@ const updatePhotographerByUserIdMock = updatePhotographerByUserId as jest.Mock;
 const getPhotographerClientsByUserIdMock = getPhotographerClientsByUserId as jest.Mock;
 const getPhotographerAlbumsByUserIdMock = getPhotographerAlbumsByUserId as jest.Mock;
 const getPendingInvitesByPhotographerIdMock = getPendingInvitesByPhotographerId as jest.Mock;
+const getTemplatesByPhotographerIdMock = getTemplatesByPhotographerId as jest.Mock;
 const cacheGetMock = cache.get as jest.Mock;
 const cacheSetMock = cache.set as jest.Mock;
 const cacheDelMock = cache.del as jest.Mock;
@@ -52,6 +66,7 @@ const getPhotographerFromId = getPhotographerFromIdHandler as unknown as Handler
 const getPhotographerClientsFromId = getPhotographerClientsFromIdHandler as unknown as Handler;
 const getPhotographerAlbumsFromId = getPhotographerAlbumsFromIdHandler as unknown as Handler;
 const getPhotographerInvitesFromId = getPhotographerInvitesFromIdHandler as unknown as Handler;
+const getPhotographerTemplatesFromId = getPhotographerTemplatesFromIdHandler as unknown as Handler;
 const updatePhotographerFromId = updatePhotographerFromIdHandler as unknown as Handler;
 
 const makeRes = (): Response =>
@@ -142,7 +157,10 @@ describe('getPhotographerFromId', () => {
   });
 
   it('forwards a 404 (not 403) for a private profile viewed by a non-owner', async () => {
-    const privatePhotographer: Photographer = { ...photographer, visibility: VisibilityType.private };
+    const privatePhotographer: Photographer = {
+      ...photographer,
+      visibility: VisibilityType.private,
+    };
     getPhotographerByUserIdMock.mockResolvedValue(privatePhotographer);
     const req = makeReq({ params: { id: 'photog-1' }, user: someoneElse });
     const res = makeRes();
@@ -155,7 +173,10 @@ describe('getPhotographerFromId', () => {
   });
 
   it('responds with a private profile to its own owner', async () => {
-    const privatePhotographer: Photographer = { ...photographer, visibility: VisibilityType.private };
+    const privatePhotographer: Photographer = {
+      ...photographer,
+      visibility: VisibilityType.private,
+    };
     getPhotographerByUserIdMock.mockResolvedValue(privatePhotographer);
     const req = makeReq({ params: { id: 'photog-1' }, user: owner });
     const res = makeRes();
@@ -196,7 +217,10 @@ describe('getPhotographerFromId', () => {
     // The cache is keyed by photographer id, shared across every viewer —
     // it must hold the real record so a later request from the owner gets
     // a correct hit, not whatever a non-owner was allowed to see.
-    const privatePhotographer: Photographer = { ...photographer, visibility: VisibilityType.private };
+    const privatePhotographer: Photographer = {
+      ...photographer,
+      visibility: VisibilityType.private,
+    };
     getPhotographerByUserIdMock.mockResolvedValue(privatePhotographer);
     const req = makeReq({ params: { id: 'photog-1' }, user: someoneElse });
     const res = makeRes();
@@ -403,6 +427,65 @@ describe('getPhotographerInvitesFromId', () => {
   });
 });
 
+describe('getPhotographerTemplatesFromId', () => {
+  const template = {
+    id: 'template-1',
+    photographerId: 'photog-1',
+    name: 'Wedding intake',
+    createdAt: new Date('2026-09-01T00:00:00Z'),
+  };
+
+  it('responds 403 when the caller is not the photographer in the URL', async () => {
+    const req = makeReq({ params: { id: 'photog-1' }, user: someoneElse });
+    const res = makeRes();
+    const next = jest.fn() as NextFunction;
+
+    await getPhotographerTemplatesFromId(req, res, next);
+
+    expect(next).toHaveBeenCalledWith(expect.objectContaining({ status: 403 }));
+    expect(getTemplatesByPhotographerIdMock).not.toHaveBeenCalled();
+  });
+
+  it("responds with the caller's own templates", async () => {
+    getTemplatesByPhotographerIdMock.mockResolvedValue([template]);
+    const req = makeReq({ params: { id: 'photog-1' }, user: owner });
+    const res = makeRes();
+    const next = jest.fn() as NextFunction;
+
+    await getPhotographerTemplatesFromId(req, res, next);
+
+    expect(getTemplatesByPhotographerIdMock).toHaveBeenCalledWith('photog-1');
+    expect(res.json).toHaveBeenCalledWith([template]);
+    expect(next).not.toHaveBeenCalled();
+  });
+
+  it('responds with an empty array (not 404) when the photographer has no templates', async () => {
+    getTemplatesByPhotographerIdMock.mockResolvedValue([]);
+    const req = makeReq({ params: { id: 'photog-1' }, user: owner });
+    const res = makeRes();
+    const next = jest.fn() as NextFunction;
+
+    await getPhotographerTemplatesFromId(req, res, next);
+
+    expect(res.json).toHaveBeenCalledWith([]);
+    expect(next).not.toHaveBeenCalled();
+  });
+
+  it('forwards an unexpected DB error', async () => {
+    const dbError = new Error('db exploded');
+    getTemplatesByPhotographerIdMock.mockRejectedValue(dbError);
+    const next = jest.fn() as NextFunction;
+
+    await getPhotographerTemplatesFromId(
+      makeReq({ params: { id: 'photog-1' }, user: owner }),
+      makeRes(),
+      next,
+    );
+
+    expect(next).toHaveBeenCalledWith(dbError);
+  });
+});
+
 describe('updatePhotographerFromId', () => {
   it('responds 403 when the caller is not the photographer in the URL, and never touches the DB', async () => {
     const req = makeReq({
@@ -425,7 +508,11 @@ describe('updatePhotographerFromId', () => {
     const req = makeReq({
       params: { id: 'photog-1' },
       user: owner,
-      body: { bio: 'new bio', instagramHandle: '@photog1', profilePhotoUrl: photographer.profilePhotoUrl },
+      body: {
+        bio: 'new bio',
+        instagramHandle: '@photog1',
+        profilePhotoUrl: photographer.profilePhotoUrl,
+      },
     });
     const res = makeRes();
     const next = jest.fn() as NextFunction;

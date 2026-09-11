@@ -113,21 +113,24 @@ export async function updateAlbumById(
 export async function deleteAlbumById(id: string): Promise<void> {
   await pool.query('DELETE FROM albums WHERE id = $1', [id]);
 }
-//     getAlbumsNeedingWarning(days: number): Promise<Album[]> — albums
-//       where access_expires_at <= NOW() + INTERVAL 'N days' AND the
-//       relevant warned_*_at IS NULL. Three call sites (90/30/7), so decide
-//       whether that's one parameterised function or three thin ones —
-//       either way, the warned_*_at column being updated can't be a normal
-//       $1-style query parameter (those bind values, not column names), so
-//       whichever shape you pick still needs to pick the right column name
-//       in application code, not via a placeholder.
-//     markAlbumWarned(albumId, field): sets one warned_*_at = NOW()
-//     getExpiredAlbums(): Promise<Album[]> — access_expires_at < NOW()
-//   already available: getPhotosForAlbum (db/queries/photos.ts — paginated,
-//   built for the API route; you likely want every photo in the album here,
-//   not one page of it), deletePhotoById, deleteAlbumById,
-//   getAlbumOwnersForPhoto
-
+/**
+ * Albums due an expiry warning at the 90/30/7-day mark.
+ *
+ * The predicate is `<=` rather than `=` deliberately. Matching the exact day
+ * would mean an album whose warning day passed while the worker was down — a
+ * deploy, a crash, a run delayed past midnight UTC — is skipped forever, since
+ * tomorrow it is N-1 days out and no longer matches. With `<=` the condition
+ * stays true until something clears it, so a missed run simply catches up on
+ * the next one. `warned_*_at IS NULL` is what clears it, which is why reading
+ * the qualifying albums and calling markAlbumWarned need to stay close
+ * together: two runs overlapping before the first one's write lands would both
+ * see the album as unwarned and warn twice.
+ *
+ * warnedColumn is interpolated rather than bound. A $1 placeholder binds a
+ * *value*, never an identifier, so a column name cannot travel that way. This
+ * is safe because `days` is typed to the three literals and the column name is
+ * chosen from them here — no caller-supplied string ever reaches the SQL.
+ */
 export async function getAlbumsNeedingWarning(days: 90 | 30 | 7): Promise<Album[]> {
   const warnedColumn = days === 90 ? 'warned_90_at' : days === 30 ? 'warned_30_at' : 'warned_7_at';
 
