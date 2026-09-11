@@ -31,6 +31,7 @@ import usersRouter from './routes/users';
 import photographersRouter from './routes/photographers';
 import invitesRouter from './routes/invites';
 import albumsRouter from './routes/albums';
+import photosRouter from './routes/photos';
 
 const app = express();
 
@@ -85,6 +86,7 @@ app.use(loadUser);
 // Mount your routers here as you build them.
 app.use('/photographers', photographersRouter);
 app.use('/albums', albumsRouter);
+app.use('/photos', photosRouter);
 
 // TODO: remove before shipping — triggers errorHandler with different error shapes
 app.get('/test-error', (_req, _res, next) => {

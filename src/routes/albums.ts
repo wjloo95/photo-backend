@@ -1,11 +1,35 @@
 import { Router, RequestHandler } from 'express';
+import multer from 'multer';
+import os from 'node:os';
+import path from 'node:path';
 import { insertAlbum, getAlbumById, updateAlbumById, deleteAlbumById } from '../db/queries/albums';
 import { getClientByUserId } from '../db/queries/clients';
 import { AlbumType, UserRole } from '../types';
 import { requireRole } from '../middleware/requireRole';
 import { AppError } from '../types/AppError';
+import {
+  insertPhotosForAlbum,
+  getPhotoById,
+  getPhotosForAlbum,
+  getAlbumOwnersForPhoto,
+  addPhotoToAlbum,
+  removePhotoFromAlbum,
+  deletePhotosFromAlbum,
+} from '../db/queries/photos';
+import { photoQueue, PhotoJobName } from '../jobs/queues/photoQueue';
+import fs from 'node:fs/promises';
 
 const router = Router();
+
+// Uploaded files land here temporarily, under their *original* multer-
+// generated names — see createAlbumPhotosBatch below for why they get
+// renamed before the background job ever looks at them.
+const UPLOAD_TMP_DIR = path.join(os.tmpdir(), 'sys-photo-uploads');
+
+const upload = multer({
+  storage: multer.diskStorage({ destination: UPLOAD_TMP_DIR }),
+  limits: { fileSize: 25 * 1024 * 1024 }, // 25MB/file — arbitrary but non-infinite; unbounded multipart bodies are a DoS vector
+});
 
 // Using setFullYear (not adding a fixed millisecond offset) so this is
 // correct across leap years.
@@ -120,9 +144,209 @@ export const deleteAlbumFromId: RequestHandler = async (req, res, next) => {
   }
 };
 
+// POST /albums/:id/photos/batch — photographer only, own albums only.
+// Accepts multipart file uploads (field name 'photos', see the `upload`
+// multer instance above), inserts a `photos` row per file (status =
+// 'processing'), enqueues one ProcessBatch job on photoQueue, and responds
+// 202 immediately — it must NOT wait for Cloudinary. The actual upload to
+// Cloudinary happens later, in the background worker (5.2).
+//
+// multer's diskStorage writes each upload to UPLOAD_TMP_DIR under a
+// temporary filename it generates (available as `file.path` on each entry
+// in req.files). The background worker only ever receives `{ photoIds,
+// albumId }` as job data (see ProcessBatchJobData in
+// jobs/queues/photoQueue.ts) — no file paths. So once insertPhotosForAlbum
+// returns real photo ids, each temp file is renamed so its filename ON DISK
+// *is* its photo id. That lets the worker find "the file for photo X" later
+// by re-deriving path.join(UPLOAD_TMP_DIR, photoId) — no path needs to
+// travel through Redis at all.
+export const createAlbumPhotosBatch: RequestHandler = async (req, res, next) => {
+  try {
+    const album = await getAlbumById(req.params.id);
+
+    if (!album) {
+      return next(new AppError('Album not found', 404));
+    }
+
+    if (album.photographerId !== req.user!.id) {
+      return next(new AppError('Forbidden', 403));
+    }
+
+    const fileArr = req.files;
+
+    if (!Array.isArray(fileArr) || fileArr.length === 0) {
+      return next(new AppError('No files uploaded', 400));
+    }
+
+    const photos = await insertPhotosForAlbum(album.id, fileArr.length);
+
+    await Promise.all(
+      fileArr.map((file, i) => fs.rename(file.path, path.join(UPLOAD_TMP_DIR, photos[i].id))),
+    );
+
+    await photoQueue.add(PhotoJobName.ProcessBatch, {
+      photoIds: photos.map((p) => p.id),
+      albumId: album.id,
+    });
+
+    res.status(202).json(photos);
+  } catch (err) {
+    next(err);
+  }
+};
+
+// GET /albums/:id/photos — both roles, same ownership rule as GET /albums/:id.
+// Paginated via ?page=&limit= (both optional) — offset = (page - 1) * limit.
+// limit is capped at MAX_PHOTOS_PAGE_SIZE so a caller can't request an
+// unbounded page in one request; either param falls back to its default
+// when missing or not a positive integer, rather than erroring.
+const DEFAULT_PHOTOS_PAGE_SIZE = 20;
+const MAX_PHOTOS_PAGE_SIZE = 100;
+
+function parsePaginationParam(value: unknown, fallback: number, max?: number): number {
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed < 1) {
+    return fallback;
+  }
+  return max ? Math.min(parsed, max) : parsed;
+}
+
+export const getAlbumPhotos: RequestHandler = async (req, res, next) => {
+  try {
+    const album = await getAlbumById(req.params.id);
+
+    if (!album) {
+      return next(new AppError('Album not found', 404));
+    }
+
+    const isOwnerPhotographer =
+      req.user?.role === UserRole.photographer && album.photographerId === req.user.id;
+    const isOwnerClient = req.user?.role === UserRole.client && album.clientId === req.user.id;
+
+    if (!isOwnerPhotographer && !isOwnerClient) {
+      return next(new AppError('Forbidden', 403));
+    }
+
+    const page = parsePaginationParam(req.query.page, 1);
+    const limit = parsePaginationParam(
+      req.query.limit,
+      DEFAULT_PHOTOS_PAGE_SIZE,
+      MAX_PHOTOS_PAGE_SIZE,
+    );
+    const offset = (page - 1) * limit;
+
+    const photos = await getPhotosForAlbum(album.id, limit, offset);
+
+    res.json(photos);
+  } catch (err) {
+    next(err);
+  }
+};
+
+// DELETE /albums/:id/photos/batch — bulk remove from this album only (the
+// photo_albums link), not from the system. Photographer only, own albums.
+export const deleteAlbumPhotosBatch: RequestHandler = async (req, res, next) => {
+  try {
+    const album = await getAlbumById(req.params.id);
+
+    if (!album) {
+      return next(new AppError('Album not found', 404));
+    }
+
+    if (album.photographerId !== req.user!.id) {
+      return next(new AppError('Forbidden', 403));
+    }
+
+    const { photoIds } = req.body;
+
+    if (!Array.isArray(photoIds) || photoIds.length === 0) {
+      return next(new AppError('photoIds is required', 400));
+    }
+
+    await deletePhotosFromAlbum(album.id, photoIds);
+
+    res.status(204).send();
+  } catch (err) {
+    next(err);
+  }
+};
+
+// POST /albums/:id/photos/:photoId — link an existing photo into another
+// album. Photographer only, own albums only — and the photo itself must
+// already belong to at least one album owned by this same photographer
+// (checked via getAlbumOwnersForPhoto). Without that second check, any
+// photographer could link in an arbitrary photo id — including another
+// photographer's private client photos — just by knowing/guessing its UUID.
+export const addAlbumPhoto: RequestHandler = async (req, res, next) => {
+  try {
+    const album = await getAlbumById(req.params.id);
+
+    if (!album) {
+      return next(new AppError('Album not found', 404));
+    }
+
+    if (album.photographerId !== req.user!.id) {
+      return next(new AppError('Forbidden', 403));
+    }
+
+    const photo = await getPhotoById(req.params.photoId);
+
+    if (!photo) {
+      return next(new AppError('Photo not found', 404));
+    }
+
+    const owners = await getAlbumOwnersForPhoto(photo.id);
+    const hasAccess = owners.some((owner) => owner.photographerId === req.user!.id);
+
+    if (!hasAccess) {
+      return next(new AppError('Forbidden', 403));
+    }
+
+    await addPhotoToAlbum(album.id, photo.id);
+
+    res.status(201).json(photo);
+  } catch (err) {
+    next(err);
+  }
+};
+
+// DELETE /albums/:id/photos/:photoId — remove from this album only, not
+// from the system. Photographer only, own albums only.
+export const removeAlbumPhoto: RequestHandler = async (req, res, next) => {
+  try {
+    const album = await getAlbumById(req.params.id);
+
+    if (!album) {
+      return next(new AppError('Album not found', 404));
+    }
+
+    if (album.photographerId !== req.user!.id) {
+      return next(new AppError('Forbidden', 403));
+    }
+
+    await removePhotoFromAlbum(album.id, req.params.photoId);
+
+    res.status(204).send();
+  } catch (err) {
+    next(err);
+  }
+};
+
 router.post('/', requireRole(UserRole.photographer), createAlbum);
 router.get('/:id', getAlbumFromId);
+router.get('/:id/photos', getAlbumPhotos);
 router.patch('/:id', requireRole(UserRole.photographer), updateAlbumFromId);
 router.delete('/:id', requireRole(UserRole.photographer), deleteAlbumFromId);
+router.post(
+  '/:id/photos/batch',
+  requireRole(UserRole.photographer),
+  upload.array('photos'),
+  createAlbumPhotosBatch,
+);
+// Registered before '/:id/photos/:photoId' below — Express matches routes in
+// registration order, and 'batch' would otherwise be captured as :photoId.
+router.delete('/:id/photos/batch', requireRole(UserRole.photographer), deleteAlbumPhotosBatch);
+router.post('/:id/photos/:photoId', requireRole(UserRole.photographer), addAlbumPhoto);
+router.delete('/:id/photos/:photoId', requireRole(UserRole.photographer), removeAlbumPhoto);
 
 export default router;

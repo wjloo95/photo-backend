@@ -120,6 +120,8 @@ export interface Photo {
   id: string;
   basePath: string;         // Cloudinary key prefix
   status: PhotoStatus;      // 'processing' until Cloudinary confirms; then 'ready'
+  width: number | null;     // null until the processor reads it back from Cloudinary
+  height: number | null;    // null until the processor reads it back from Cloudinary
   uploadedAt: Date;
 }
 

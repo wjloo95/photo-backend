@@ -104,9 +104,13 @@ PostgreSQL via AWS RDS. All entities use UUID primary keys. Foreign keys enforce
 | id | uuid | PK |
 | base_path | string | Cloudinary key |
 | status | enum('processing', 'ready') | |
+| width | integer | nullable — set by the processor once Cloudinary reports it |
+| height | integer | nullable — set by the processor once Cloudinary reports it |
 | uploaded_at | timestamp | |
 
 > **Note on base_path:** Variants are derived by convention — `{base_path}/original.jpg`, `{base_path}/standard.jpg`, `{base_path}/thumbnail.jpg`. Only one field needed in DB.
+
+> **Note on width/height:** nullable for the same reason base_path starts as a placeholder — the real pixel dimensions aren't known until Cloudinary processes the upload. The frontend uses them to render aspect-ratio-accurate placeholders while the full image is still loading.
 
 #### PhotoAlbum *(join table)*
 | Field | Type | Notes |

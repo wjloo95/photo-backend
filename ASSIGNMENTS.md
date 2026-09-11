@@ -117,12 +117,12 @@
 - [ ] Returns `202 Accepted` immediately — **does not wait for Cloudinary**
 
 ### 4.3 — Remaining Photo Endpoints
-- [ ] `GET /albums/:id/photos` — **paginated**: accept `?page=&limit=` query params. `OFFSET = (page - 1) * limit`
-- [ ] `DELETE /albums/:id/photos/batch` — bulk remove from album
-- [ ] `POST /albums/:id/photos/:id` — add an existing photo to an album
-- [ ] `DELETE /albums/:id/photos/:id` — remove photo from album only (not from system)
-- [ ] `GET /photos/:id` — single photo
-- [ ] `DELETE /photos/:id` — permanently delete from system
+- [x] `GET /albums/:id/photos` — **paginated**: accept `?page=&limit=` query params. `OFFSET = (page - 1) * limit`
+- [x] `DELETE /albums/:id/photos/batch` — bulk remove from album
+- [x] `POST /albums/:id/photos/:id` — add an existing photo to an album
+- [x] `DELETE /albums/:id/photos/:id` — remove photo from album only (not from system)
+- [x] `GET /photos/:id` — single photo
+- [x] `DELETE /photos/:id` — permanently delete from system
 
 ---
 
@@ -139,8 +139,8 @@
 - [ ] Handles `PhotoJobName.ProcessBatch` jobs
 - [ ] For each photo ID in `job.data.photoIds`:
   - Uploads the file to Cloudinary
-  - Uses the returned `public_id` as `base_path`
-  - Updates the `photos` row: sets `base_path`, sets `status = ready`
+  - Uses the returned `public_id` as `base_path`, and the returned `width`/`height` as-is
+  - Updates the `photos` row: sets `base_path`, `width`, `height`, sets `status = ready`
 
 ### 5.3 — Expiry Scheduler + Processor
 - [ ] `src/jobs/schedulers/expiryScheduler.ts` — registers 4 repeating cron jobs on `expiryQueue`:
