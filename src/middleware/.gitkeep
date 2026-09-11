@@ -1,0 +1,9 @@
+# You implement everything in this folder.
+#
+# Files to create (per Section 7 of the architecture doc):
+#
+#   auth.ts          — verify the JWT from Auth0, attach user to req
+#   requireRole.ts   — guard routes to photographer-only or client-only access
+#   errorHandler.ts  — global Express error handler (4-argument middleware)
+#
+# Workflow: write the function → wire it into app.ts → hit the endpoint → fix errors.

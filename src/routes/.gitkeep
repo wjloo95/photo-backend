@@ -1,0 +1,20 @@
+# You implement everything in this folder.
+#
+# Create one file per resource group (per the architecture doc):
+#
+#   users.ts           POST /users, PATCH /users/:id, DELETE /users/:id
+#   photographers.ts   GET/PATCH /photographers/:id, etc.
+#   clients.ts         GET /clients/:id, etc.
+#   invites.ts         POST /invites, POST /invites/:id/resend, etc.
+#   albums.ts          POST /albums, GET /albums/:id, etc.
+#   photos.ts          GET /photos/:id, DELETE /photos/:id
+#   conversations.ts   GET /conversations, GET /conversations/:id
+#   messages.ts        GET/POST /conversations/:id/messages
+#   templates.ts       POST /templates, etc.
+#   responses.ts       GET /responses/:id, etc.
+#
+# Workflow per route (Section 7):
+#   1. Write the route signature (path, verb, empty handler)
+#   2. Write the handler logic yourself
+#   3. Run it, hit errors, fix them yourself
+#   4. Then ask Claude to review

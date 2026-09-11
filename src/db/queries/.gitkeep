@@ -1,0 +1,24 @@
+# You implement everything in this folder.
+#
+# Create one file per resource (mirrors the routes/ structure):
+#
+#   users.ts           findUserById, createUser, deleteUser, ...
+#   photographers.ts   findPhotographerById, updatePhotographer, ...
+#   albums.ts          createAlbum, getAlbumsByPhotographer, getExpiring, ...
+#   photos.ts          createPhoto, updatePhotoStatus, deletePhoto, ...
+#   ...
+#
+# Each function takes typed parameters and calls pool.query() with parameterised SQL.
+# Import pool from src/config/database.ts.
+#
+# Example:
+#   import { pool } from '../../config/database';
+#   import { User } from '../../types';
+#
+#   export async function findUserById(id: string): Promise<User | null> {
+#     const { rows } = await pool.query('SELECT * FROM users WHERE id = $1', [id]);
+#     return rows[0] ?? null;
+#   }
+#
+# Always use parameterised queries ($1, $2, ...) — never string-interpolate
+# user input into SQL. Parameterised queries prevent SQL injection.

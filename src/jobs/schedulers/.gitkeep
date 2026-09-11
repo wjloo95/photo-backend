@@ -1,0 +1,15 @@
+# You implement everything in this folder.
+#
+# File to create:
+#
+#   expiryScheduler.ts  — registers repeating cron jobs on the expiryQueue
+#                         using BullMQ's repeat option.
+#
+# Example shape (you write the logic):
+#
+#   expiryQueue.add(ExpiryJobName.Warn90Days, {}, {
+#     repeat: { pattern: '0 8 * * *' }  // every day at 08:00 UTC
+#   });
+#
+# The cron pattern format is standard: minute hour day-of-month month day-of-week
+# Run this scheduler once at startup from src/jobs/worker.ts.

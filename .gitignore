@@ -1,0 +1,22 @@
+# Dependencies
+node_modules/
+
+# Compiled output
+dist/
+
+# Environment — never commit real credentials
+.env
+
+# macOS
+.DS_Store
+
+# Editor
+.vscode/
+.idea/
+
+# Logs
+*.log
+npm-debug.log*
+
+# TypeScript build info
+*.tsbuildinfo

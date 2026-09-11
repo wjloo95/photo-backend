@@ -1,0 +1,44 @@
+{
+  "compilerOptions": {
+    // Target modern Node.js — ES2022 gives you top-level await, Array.at(), etc.
+    "target": "ES2022",
+    "module": "commonjs",
+    "lib": ["ES2022"],
+
+    // Emit compiled JS to dist/
+    "outDir": "./dist",
+    "rootDir": "./src",
+
+    // Strict mode — catches the most bugs at compile time.
+    // This enables: strictNullChecks, noImplicitAny, strictFunctionTypes, and more.
+    // Don't turn these off when you hit errors — fix the errors instead.
+    "strict": true,
+
+    // Require explicit return types on all functions.
+    // Forces you to think about what each function returns.
+    "noImplicitReturns": true,
+
+    // Error on unused local variables and parameters.
+    // Keeps code clean; unused vars are often bugs.
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+
+    // Allow importing JSON files directly (useful for config)
+    "resolveJsonModule": true,
+
+    // Ensure consistent casing in imports (catches case-sensitivity bugs on Mac vs Linux)
+    "forceConsistentCasingInFileNames": true,
+
+    // Required for ts-node and some decorator libraries
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+
+    // Source maps so stack traces point to .ts files, not compiled .js
+    "sourceMap": true,
+
+    // Needed for pg and other libraries that use decorators or index signatures
+    "declaration": true
+  },
+  "include": ["src/**/*"],
+  "exclude": ["node_modules", "dist"]
+}

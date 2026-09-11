@@ -1,0 +1,15 @@
+# You implement everything in this folder.
+#
+# Files to create:
+#
+#   photoProcessor.ts    — handles PhotoJobName.ProcessBatch jobs
+#                          receives job.data: { photoIds, albumId }
+#                          calls Cloudinary to confirm processing, then
+#                          updates photo status from 'processing' → 'ready'
+#
+#   expiryProcessor.ts   — handles ExpiryJobName.* jobs
+#                          queries DB for albums in each warning window,
+#                          sends emails, updates warned_*_at columns,
+#                          deletes expired albums and their Cloudinary assets
+#
+# Processors are registered in src/jobs/worker.ts (also yours to write).
