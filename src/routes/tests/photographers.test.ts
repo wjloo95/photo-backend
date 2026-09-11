@@ -1,30 +1,42 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { Request, Response, NextFunction } from 'express';
-import { AlbumType, Photographer, User, UserRole, VisibilityType } from '../../types';
+import { AlbumType, InviteStatus, Photographer, User, UserRole, VisibilityType } from '../../types';
 
-const {
-  getPhotographerByUserIdMock,
-  updatePhotographerByUserIdMock,
-  getPhotographerClientsByUserIdMock,
-  getPhotographerAlbumsByUserIdMock,
-} = vi.hoisted(() => ({
+const { getPhotographerByUserIdMock, updatePhotographerByUserIdMock } = vi.hoisted(() => ({
   getPhotographerByUserIdMock: vi.fn(),
   updatePhotographerByUserIdMock: vi.fn(),
-  getPhotographerClientsByUserIdMock: vi.fn(),
-  getPhotographerAlbumsByUserIdMock: vi.fn(),
 }));
-
 vi.mock('../../db/queries/photographers', () => ({
   getPhotographerByUserId: getPhotographerByUserIdMock,
   updatePhotographerByUserId: updatePhotographerByUserIdMock,
+}));
+
+const { getPhotographerClientsByUserIdMock } = vi.hoisted(() => ({
+  getPhotographerClientsByUserIdMock: vi.fn(),
+}));
+vi.mock('../../db/queries/clients', () => ({
   getPhotographerClientsByUserId: getPhotographerClientsByUserIdMock,
+}));
+
+const { getPhotographerAlbumsByUserIdMock } = vi.hoisted(() => ({
+  getPhotographerAlbumsByUserIdMock: vi.fn(),
+}));
+vi.mock('../../db/queries/albums', () => ({
   getPhotographerAlbumsByUserId: getPhotographerAlbumsByUserIdMock,
+}));
+
+const { getPendingInvitesByPhotographerIdMock } = vi.hoisted(() => ({
+  getPendingInvitesByPhotographerIdMock: vi.fn(),
+}));
+vi.mock('../../db/queries/invites', () => ({
+  getPendingInvitesByPhotographerId: getPendingInvitesByPhotographerIdMock,
 }));
 
 import {
   getPhotographerFromId as getPhotographerFromIdHandler,
   getPhotographerClientsFromId as getPhotographerClientsFromIdHandler,
   getPhotographerAlbumsFromId as getPhotographerAlbumsFromIdHandler,
+  getPhotographerInvitesFromId as getPhotographerInvitesFromIdHandler,
   updatePhotographerFromId as updatePhotographerFromIdHandler,
 } from '../photographers';
 
@@ -34,6 +46,7 @@ type Handler = (req: Request, res: Response, next: NextFunction) => Promise<void
 const getPhotographerFromId = getPhotographerFromIdHandler as unknown as Handler;
 const getPhotographerClientsFromId = getPhotographerClientsFromIdHandler as unknown as Handler;
 const getPhotographerAlbumsFromId = getPhotographerAlbumsFromIdHandler as unknown as Handler;
+const getPhotographerInvitesFromId = getPhotographerInvitesFromIdHandler as unknown as Handler;
 const updatePhotographerFromId = updatePhotographerFromIdHandler as unknown as Handler;
 
 const makeRes = (): Response =>
@@ -268,6 +281,68 @@ describe('getPhotographerAlbumsFromId', () => {
     const next = vi.fn() as NextFunction;
 
     await getPhotographerAlbumsFromId(req, res, next);
+
+    expect(next).toHaveBeenCalledWith(dbError);
+  });
+});
+
+describe('getPhotographerInvitesFromId', () => {
+  const pendingInvite = {
+    id: 'invite-1',
+    photographerId: 'photog-1',
+    email: 'client@example.com',
+    clientName: 'Jane Client',
+    token: 'a'.repeat(64),
+    status: InviteStatus.pending,
+    expiresAt: new Date('2026-09-25T00:00:00Z'),
+    acceptedAt: null,
+    createdAt: new Date('2026-08-01T00:00:00Z'),
+  };
+
+  it('responds 403 when the caller is not the photographer in the URL', async () => {
+    const req = makeReq({ params: { id: 'photog-1' }, user: someoneElse });
+    const res = makeRes();
+    const next = vi.fn() as NextFunction;
+
+    await getPhotographerInvitesFromId(req, res, next);
+
+    expect(next).toHaveBeenCalledWith(expect.objectContaining({ status: 403 }));
+    expect(getPendingInvitesByPhotographerIdMock).not.toHaveBeenCalled();
+  });
+
+  it('responds with the pending invites when the caller owns the photographer profile', async () => {
+    getPendingInvitesByPhotographerIdMock.mockResolvedValue([pendingInvite]);
+    const req = makeReq({ params: { id: 'photog-1' }, user: owner });
+    const res = makeRes();
+    const next = vi.fn() as NextFunction;
+
+    await getPhotographerInvitesFromId(req, res, next);
+
+    expect(getPendingInvitesByPhotographerIdMock).toHaveBeenCalledWith('photog-1');
+    expect(res.json).toHaveBeenCalledWith([pendingInvite]);
+    expect(next).not.toHaveBeenCalled();
+  });
+
+  it('responds with an empty array (not 404) when the photographer has no pending invites', async () => {
+    getPendingInvitesByPhotographerIdMock.mockResolvedValue([]);
+    const req = makeReq({ params: { id: 'photog-1' }, user: owner });
+    const res = makeRes();
+    const next = vi.fn() as NextFunction;
+
+    await getPhotographerInvitesFromId(req, res, next);
+
+    expect(res.json).toHaveBeenCalledWith([]);
+    expect(next).not.toHaveBeenCalled();
+  });
+
+  it('forwards errors from the query layer to next(err)', async () => {
+    const dbError = new Error('connection lost');
+    getPendingInvitesByPhotographerIdMock.mockRejectedValue(dbError);
+    const req = makeReq({ params: { id: 'photog-1' }, user: owner });
+    const res = makeRes();
+    const next = vi.fn() as NextFunction;
+
+    await getPhotographerInvitesFromId(req, res, next);
 
     expect(next).toHaveBeenCalledWith(dbError);
   });

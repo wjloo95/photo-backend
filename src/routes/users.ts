@@ -1,5 +1,5 @@
 import { Router, Request, RequestHandler } from 'express';
-import { insertUserFromWebhook, updateUserById } from '../db/queries/users';
+import { insertClientFromInvite, insertUserFromWebhook, updateUserById } from '../db/queries/users';
 import { env } from '../config/env';
 import { auth, loadUser } from '../middleware/auth';
 import { AppError } from '../types/AppError';
@@ -44,6 +44,13 @@ export function verifyWebhookSignature(req: Request): boolean {
 // signature verification rather than the JWT `auth` middleware.
 // Exported separately (rather than inlined in the router.post call) so tests
 // can call it directly with mocked req/res/next, no HTTP layer needed.
+//
+// Two signups funnel through this one webhook (D-08): a photographer signing
+// up directly, or a client accepting an invite. `inviteToken` is only present
+// in the payload for the latter — the frontend attaches it to the Auth0
+// signup call when the user arrived via an invite link (see 3.3 in
+// ASSIGNMENTS.md). Per D-19, clients only ever come through this path, so
+// there's no "client, no inviteToken" case to design for.
 export const createUserFromWebhook: RequestHandler = async (req, res, next) => {
   try {
     if (!verifyWebhookSignature(req)) {
@@ -51,8 +58,12 @@ export const createUserFromWebhook: RequestHandler = async (req, res, next) => {
       return;
     }
 
-    const { email, name, role, providerId } = req.body;
-    const createdUser = await insertUserFromWebhook({ email, name, role, providerId });
+    const { email, name, role, providerId, inviteToken } = req.body;
+
+    const createdUser = inviteToken
+      ? await insertClientFromInvite({ email, name, providerId, inviteToken })
+      : await insertUserFromWebhook({ email, name, role, providerId });
+
     res.status(201).json(createdUser);
   } catch (err) {
     next(err);

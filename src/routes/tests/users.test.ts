@@ -7,12 +7,14 @@ vi.mock('../../config/env', () => ({
   env: { AUTH0_WEBHOOK_SECRET: 'test-webhook-secret' },
 }));
 
-const { insertUserFromWebhookMock, updateUserByIdMock } = vi.hoisted(() => ({
+const { insertUserFromWebhookMock, insertClientFromInviteMock, updateUserByIdMock } = vi.hoisted(() => ({
   insertUserFromWebhookMock: vi.fn(),
+  insertClientFromInviteMock: vi.fn(),
   updateUserByIdMock: vi.fn(),
 }));
 vi.mock('../../db/queries/users', () => ({
   insertUserFromWebhook: insertUserFromWebhookMock,
+  insertClientFromInvite: insertClientFromInviteMock,
   updateUserById: updateUserByIdMock,
 }));
 
@@ -80,6 +82,7 @@ describe('createUserFromWebhook', () => {
 
   beforeEach(() => {
     insertUserFromWebhookMock.mockReset();
+    insertClientFromInviteMock.mockReset();
   });
 
   it('responds 401 and does not call insertUserFromWebhook when the signature is invalid', async () => {
@@ -124,6 +127,64 @@ describe('createUserFromWebhook', () => {
     await createUserFromWebhook(req, res, next);
 
     expect(next).toHaveBeenCalledWith(dbError);
+    expect(res.status).not.toHaveBeenCalled();
+  });
+
+  // A payload carrying inviteToken means this signup came from an invite
+  // link (a client), not a direct Auth0 signup (a photographer) — the two
+  // paths funnel through this one webhook per D-08, dispatched here.
+  it('calls insertClientFromInvite (not insertUserFromWebhook) when the payload includes an inviteToken', async () => {
+    const payload = {
+      email: 'invited-client@example.com',
+      name: 'Jane Client',
+      providerId: 'auth0|client-5',
+      inviteToken: 'a'.repeat(64),
+    };
+    const createdUser: User = {
+      id: 'user-5',
+      email: payload.email,
+      name: payload.name,
+      role: UserRole.client,
+      providerId: payload.providerId,
+      joinedAt: new Date('2026-08-27T00:00:00Z'),
+    };
+    insertClientFromInviteMock.mockResolvedValue(createdUser);
+
+    const req = makeReq(payload);
+    const res = makeRes();
+    const next = vi.fn() as NextFunction;
+
+    await createUserFromWebhook(req, res, next);
+
+    expect(insertClientFromInviteMock).toHaveBeenCalledWith({
+      email: payload.email,
+      name: payload.name,
+      providerId: payload.providerId,
+      inviteToken: payload.inviteToken,
+    });
+    expect(insertUserFromWebhookMock).not.toHaveBeenCalled();
+    expect(res.status).toHaveBeenCalledWith(201);
+    expect(res.json).toHaveBeenCalledWith(createdUser);
+    expect(next).not.toHaveBeenCalled();
+  });
+
+  it('forwards errors from insertClientFromInvite (e.g. an expired invite) to next(err)', async () => {
+    const payload = {
+      email: 'invited-client@example.com',
+      name: 'Jane Client',
+      providerId: 'auth0|client-5',
+      inviteToken: 'a'.repeat(64),
+    };
+    const inviteError = Object.assign(new Error('Invite is invalid or expired'), { status: 410 });
+    insertClientFromInviteMock.mockRejectedValue(inviteError);
+
+    const req = makeReq(payload);
+    const res = makeRes();
+    const next = vi.fn() as NextFunction;
+
+    await createUserFromWebhook(req, res, next);
+
+    expect(next).toHaveBeenCalledWith(inviteError);
     expect(res.status).not.toHaveBeenCalled();
   });
 });

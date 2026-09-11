@@ -29,6 +29,7 @@ import { errorHandler } from './middleware/errorHandler';
 import { auth, loadUser } from './middleware/auth';
 import usersRouter from './routes/users';
 import photographersRouter from './routes/photographers';
+import invitesRouter from './routes/invites';
 
 const app = express();
 
@@ -65,6 +66,13 @@ app.get('/health', (_req, res) => {
 // (see verifyWebhookSignature in routes/users.ts), not a user JWT, so it's
 // mounted before the auth/loadUser middleware below.
 app.use('/users', usersRouter);
+
+// /invites/validate is a public endpoint (a prospective client hits it before
+// they have an account, so there's no JWT to send) — mounted before the
+// global auth/loadUser for the same reason as /users above. The routes on
+// this router that DO need auth (POST /) apply `auth, loadUser` directly
+// themselves rather than relying on mount order.
+app.use('/invites', invitesRouter);
 
 // auth verifies the JWT and attaches the decoded payload to req.auth.
 // loadUser resolves it to the full DB user and attaches it to req.user.

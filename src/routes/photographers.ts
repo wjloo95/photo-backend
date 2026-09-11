@@ -1,10 +1,8 @@
 import { Router, RequestHandler } from 'express';
-import {
-  getPhotographerByUserId,
-  updatePhotographerByUserId,
-  getPhotographerClientsByUserId,
-  getPhotographerAlbumsByUserId,
-} from '../db/queries/photographers';
+import { getPhotographerByUserId, updatePhotographerByUserId } from '../db/queries/photographers';
+import { getPhotographerClientsByUserId } from '../db/queries/clients';
+import { getPhotographerAlbumsByUserId } from '../db/queries/albums';
+import { getPendingInvitesByPhotographerId } from '../db/queries/invites';
 import { Album, VisibilityType } from '../types';
 import { AppError } from '../types/AppError';
 
@@ -89,6 +87,22 @@ export const getPhotographerAlbumsFromId: RequestHandler = async (req, res, next
   }
 };
 
+// GET /photographers/:id/invites
+// auth + loadUser already run globally in app.ts for everything mounted
+// after /users, so req.user is populated by the time this handler runs.
+export const getPhotographerInvitesFromId: RequestHandler = async (req, res, next) => {
+  try {
+    if (req.params.id !== req.user?.id) {
+      return next(new AppError('Forbidden', 403));
+    }
+
+    const invites = await getPendingInvitesByPhotographerId(req.params.id);
+    res.json(invites);
+  } catch (err) {
+    next(err);
+  }
+};
+
 // PATCH /photographers/:id
 // auth + loadUser already run globally in app.ts for everything mounted
 // after /users, so req.user is populated by the time this handler runs.
@@ -118,6 +132,7 @@ export const updatePhotographerFromId: RequestHandler = async (req, res, next) =
 router.get('/:id', getPhotographerFromId);
 router.get('/:id/clients', getPhotographerClientsFromId);
 router.get('/:id/albums', getPhotographerAlbumsFromId);
+router.get('/:id/invites', getPhotographerInvitesFromId);
 router.patch('/:id', updatePhotographerFromId);
 
 export default router;
