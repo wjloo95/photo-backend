@@ -48,6 +48,16 @@ const envSchema = z.object({
   CLOUDINARY_API_KEY: z.string().min(1, 'CLOUDINARY_API_KEY is required'),
   CLOUDINARY_API_SECRET: z.string().min(1, 'CLOUDINARY_API_SECRET is required'),
 
+  // Email
+  // Which EmailSender implementation src/email/index.ts wires up. 'console'
+  // needs no credentials and is the local default, so the expiry pipeline runs
+  // end to end without an email account; 'ses' is the production adapter.
+  EMAIL_PROVIDER: z.enum(['console', 'ses']).default('console'),
+  // The From address on every outbound message. Defaulted rather than required
+  // so an existing .env keeps working — the console adapter only prints it, and
+  // the SES adapter will reject an unverified sender loudly at send time.
+  EMAIL_FROM: z.string().email('EMAIL_FROM must be an email address').default('no-reply@sysphoto.local'),
+
   // Node environment
   NODE_ENV: z
     .enum(['development', 'production', 'test'])

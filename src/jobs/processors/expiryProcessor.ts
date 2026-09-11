@@ -21,8 +21,11 @@ import {
   getAllPhotosForAlbum,
 } from '../../db/queries/photos';
 import { ExpiryJobName } from '../queues/expiryQueue';
+import { emailSender } from '../../email';
+import { albumExpiryWarning, WarningDays } from '../../email/templates/albumExpiryWarning';
 import { processEachSafely } from './processEachSafely';
 import { v2 as cloudinary } from 'cloudinary';
+/* eslint-disable no-console */
 // Dispatch is on job.name alone. The warning cases are near-identical by
 // design — getAlbumsNeedingWarning(N) already encodes the "catch up on a missed
 // run" logic (see queries/albums.ts), so all that is left here is marking each
@@ -35,6 +38,57 @@ import { v2 as cloudinary } from 'cloudinary';
 // This queue needs its own BullMQ Worker in worker.ts, separate from the
 // photoQueue one — a Worker listens to exactly one queue, and this is 'expiry',
 // not 'photo-processing'.
+/**
+ * One warning milestone: find the albums due at `days`, mail each client, and
+ * record that the step ran.
+ *
+ * The send happens *before* markAlbumWarned, and that order is the whole
+ * reliability story. Marking first would be at-most-once — a provider timeout
+ * would leave the album flagged as warned, nobody would ever hear anything,
+ * and getExpiredAlbums would then happily delete it on schedule. Sending first
+ * is at-least-once: a failure throws, processEachSafely skips the mark for
+ * that album, and tomorrow's run picks it up again because warned_*_at is
+ * still NULL. The worst case is a duplicate email, which is a far cheaper
+ * mistake than a silent permanent deletion.
+ *
+ * An album with no clientEmail is marked warned without sending. Its client
+ * was deleted (albums.client_id is ON DELETE SET NULL), so there is nobody to
+ * warn and never will be — and leaving warned_7_at NULL would mean the
+ * deletion gate in getExpiredAlbums kept the album, and its Cloudinary assets,
+ * alive indefinitely. The column records that the step completed, not that a
+ * human read anything.
+ */
+async function sendWarnings(days: WarningDays, column: WarningColumn): Promise<void> {
+  const albums = await getAlbumsNeedingWarning(days);
+
+  await processEachSafely(
+    albums,
+    async (album) => {
+      if (album.clientEmail) {
+        await emailSender.send(
+          albumExpiryWarning({
+            clientEmail: album.clientEmail,
+            clientName: album.clientName,
+            shootDate: album.shootDate,
+            // Non-null by the query: getAlbumsNeedingWarning filters on this
+            // column, and the CHECK from migration 020 keeps portfolio albums
+            // (the only NULL case) out of it.
+            accessExpiresAt: album.accessExpiresAt!,
+            days,
+          }),
+        );
+      } else {
+        console.warn(
+          `album ${album.id} expires ${album.accessExpiresAt?.toISOString()} but has no client to warn — marking warned so it is not held back from deletion`,
+        );
+      }
+
+      await markAlbumWarned(album.id, column);
+    },
+    'albums',
+  );
+}
+
 export async function processExpiryJob(jobName: string): Promise<void> {
   switch (jobName) {
     case ExpiryJobName.DeleteExpired: {
@@ -75,42 +129,15 @@ export async function processExpiryJob(jobName: string): Promise<void> {
       );
       break;
     }
-    case ExpiryJobName.Warn90Days: {
-      const albumsToWarn = await getAlbumsNeedingWarning(90);
-      await processEachSafely(
-        albumsToWarn,
-        async (album) => {
-          // send warning by email?
-          await markAlbumWarned(album.id, WarningColumn.Warned90);
-        },
-        'albums',
-      );
+    case ExpiryJobName.Warn90Days:
+      await sendWarnings(90, WarningColumn.Warned90);
       break;
-    }
-    case ExpiryJobName.Warn30Days: {
-      const albumsToWarn = await getAlbumsNeedingWarning(30);
-      await processEachSafely(
-        albumsToWarn,
-        async (album) => {
-          // send warning by email?
-          await markAlbumWarned(album.id, WarningColumn.Warned30);
-        },
-        'albums',
-      );
+    case ExpiryJobName.Warn30Days:
+      await sendWarnings(30, WarningColumn.Warned30);
       break;
-    }
-    case ExpiryJobName.Warn7Days: {
-      const albumsToWarn = await getAlbumsNeedingWarning(7);
-      await processEachSafely(
-        albumsToWarn,
-        async (album) => {
-          // send warning by email?
-          await markAlbumWarned(album.id, WarningColumn.Warned7);
-        },
-        'albums',
-      );
+    case ExpiryJobName.Warn7Days:
+      await sendWarnings(7, WarningColumn.Warned7);
       break;
-    }
     default:
       throw new Error(`Unknown job name: ${jobName}`);
   }

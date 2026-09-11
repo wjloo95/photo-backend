@@ -90,7 +90,8 @@ export interface Client {
 
 /**
  * Album — a collection of photos, either a client shoot or a portfolio.
- * access_expires_at = shoot_date + 3 years.
+ * access_expires_at = shoot_date + 3 years for shoot albums, null for
+ * portfolio albums, which never expire (migration 020).
  * warned_*_at fields track which expiry warning emails have been sent.
  */
 export interface Album {
@@ -100,7 +101,7 @@ export interface Album {
   thumbnailPhotoId: string | null; // FK → Photo.id — null until set
   type: AlbumType;
   shootDate: Date;
-  accessExpiresAt: Date;
+  accessExpiresAt: Date | null;  // null = never expires (portfolio albums)
   warned90At: Date | null;
   warned30At: Date | null;
   warned7At: Date | null;

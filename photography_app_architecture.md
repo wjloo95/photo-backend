@@ -5,15 +5,15 @@
 
 **Stack:** Node.js / TypeScript · Express · PostgreSQL (RDS) · Redis (ElastiCache) · BullMQ · Cloudinary · Auth0/Clerk · AWS
 
-**Scale:** 12 database entities · 43 REST endpoints · 23 architecture decisions · 7 post-MVP items · Millions of users target
+**Scale:** 11 database entities · 42 REST endpoints · 25 architecture decisions · 7 post-MVP items · Millions of users target
 
 ---
 
 ## Table of Contents
 
 1. [System Overview & Requirements](#1-system-overview--requirements)
-2. [Database Schema](#2-database-schema-12-entities)
-3. [REST API Surface](#3-rest-api-surface-43-endpoints)
+2. [Database Schema](#2-database-schema-11-entities)
+3. [REST API Surface](#3-rest-api-surface-42-endpoints)
 4. [Architecture Decisions](#4-architecture-decisions)
 5. [Deployment Architecture](#5-deployment-architecture)
 6. [Post-MVP Roadmap](#6-post-mvp-roadmap)
@@ -35,7 +35,7 @@
 - Read-heavy — clients browse frequently, photographers upload infrequently
 - Target scale: millions of users with horizontal scaling from the start
 - Durability over availability (CP over AP) — photo loss is unacceptable, downtime is tolerable
-- Photo TTL: 3 years from shoot date, then permanent deletion with warnings at 90/30/7 days
+- Photo TTL: 3 years from shoot date for **shoot albums**, then permanent deletion with warnings at 90/30/7 days. Portfolio albums never expire (migration 020)
 
 ### Expiry Pipeline
 
@@ -44,13 +44,37 @@
 | expiry - 90 days | Send warning email → set `warned_90_at` |
 | expiry - 30 days | Send warning email → set `warned_30_at` |
 | expiry - 7 days | Send final warning → set `warned_7_at` |
-| **expiry date** | **Revoke access → permanently delete from Cloudinary and DB** |
+| **expiry date** | **Revoke access → permanently delete from Cloudinary and DB**, but only once `warned_7_at` is set |
+
+Warnings go to the **client**, whose access is ending. The send happens before
+`warned_*_at` is written, so a failed send leaves the column NULL and the album
+re-qualifies on the next daily run — at-least-once delivery, where the worst
+case is a duplicate email rather than a silently missed warning before an
+irreversible deletion.
+
+The deletion sweep additionally requires `warned_7_at IS NOT NULL`. If the mail
+provider is down through the entire run-up, albums wait rather than being
+destroyed unannounced. Note what that column asserts: the warning *step*
+completed, not that a human read anything — an album whose client was deleted
+(`client_id` is `ON DELETE SET NULL`) has nobody to warn, and is marked warned
+without a send so the gate cannot hold it, and its Cloudinary assets, forever.
+
+Email goes through the `EmailSender` port in `src/email/`, selected by
+`EMAIL_PROVIDER`. The default `console` adapter prints instead of sending, so
+the pipeline runs locally with no credentials; `ses` is the intended production
+adapter and is not built yet.
+
+Shoot albums only. Expiry exists because a *client's* access to their shoot is
+time-limited; a portfolio album belongs to the photographer, has no `client_id`
+by design, and so has nobody to warn and no access to revoke. Portfolio albums
+carry `access_expires_at = NULL`, and since `NULL < NOW()` evaluates to NULL
+rather than TRUE, both sweeps exclude them without needing a `type` predicate.
 
 > ⚠️ **Tradeoff:** Deletion is irreversible. No recovery path after deletion. Mitigated by three-warning notification pipeline. Post-expiry paid storage is a post-MVP consideration (F-02).
 
 ---
 
-## 2. Database Schema (12 Entities)
+## 2. Database Schema (11 Entities)
 
 PostgreSQL via AWS RDS. All entities use UUID primary keys. Foreign keys enforced at database level.
 
@@ -92,7 +116,7 @@ PostgreSQL via AWS RDS. All entities use UUID primary keys. Foreign keys enforce
 | thumbnail_photo_id | uuid | FK → Photo, nullable |
 | type | enum('shoot', 'portfolio') | |
 | shoot_date | date | |
-| access_expires_at | timestamp | shoot_date + 3 years |
+| access_expires_at | timestamp | nullable — `shoot_date + 3 years` for shoot albums, NULL for portfolio albums, which never expire. A CHECK constraint enforces the pairing (migration 020) |
 | warned_90_at | timestamp | nullable |
 | warned_30_at | timestamp | nullable |
 | warned_7_at | timestamp | nullable |
@@ -210,7 +234,7 @@ cross-entity validation query.
 
 ---
 
-## 3. REST API Surface (43 Endpoints)
+## 3. REST API Surface (42 Endpoints)
 
 All list endpoints are identity-scoped — filtered server-side by JWT auth token, not URL parameters. `GET /photographers/:id` returns role-scoped response shapes.
 
@@ -277,14 +301,16 @@ All list endpoints are identity-scoped — filtered server-side by JWT auth toke
 |---|---|---|---|
 | POST | /templates | Create template *with all its questions* (max 25) | photographer |
 | GET | /templates/:id | Get single template, questions embedded in `order` | photographer |
-| GET | /photographers/:id/templates | List a photographer's templates | photographer |
 | PUT | /templates/:id | Replace name + full question set | photographer |
 | DELETE | /templates/:id | Delete template | photographer |
 | POST | /templates/:id/responses | Assign template to client | photographer |
 | GET | /responses/:id | Get form response | both |
 | POST | /responses/:id/answers | Save answer (upsert) | client |
 | PATCH | /responses/:id/submit | Submit completed form | client |
-| GET | /clients/:id/responses | List a client's responses (summaries) | both |
+
+Two more form endpoints are listed under the resource that owns their URL
+namespace rather than repeated here: `GET /photographers/:id/templates`
+(Photographers) and `GET /clients/:id/responses` (Clients).
 
 Questions have no endpoints of their own: a template and its questions are
 created together and edited by replacing the whole set, so `"order"` is just
@@ -335,7 +361,7 @@ check-then-write pair in the handler.
 ### Data Lifecycle
 
 #### D-03 — Photo TTL
-**Decision:** `access_expires_at = shoot_date + 3 years`
+**Decision:** `access_expires_at = shoot_date + 3 years` for shoot albums; NULL (never expires) for portfolio albums
 
 **Rationale:** Balances storage cost with reasonable client access window.
 
@@ -346,13 +372,39 @@ check-then-write pair in the handler.
 ---
 
 #### D-04 — Post-expiry: permanent deletion
-**Decision:** Photos permanently deleted. Warnings at 90, 30, 7 days before expiry.
+**Decision:** Photos in shoot albums permanently deleted. Warnings at 90, 30, 7 days before expiry. Portfolio albums are exempt — nothing to revoke and nobody to warn.
 
 **Rationale:** Minimizes storage cost. Client warned proactively with ample download time.
 
 | Tradeoff | Alternative (F-02) |
 |---|---|
 | Irreversible. No recovery after deletion. Mitigated by three-warning pipeline | Cold archive storage at reduced cost. Rejected for MVP |
+
+---
+
+#### D-24 — Expiry warnings: EmailSender port, sent before marking
+**Decision:** Warnings go to the **client** through an `EmailSender` interface in `src/email/`, selected by `EMAIL_PROVIDER`. The send completes *before* `warned_*_at` is written.
+
+**Rationale:** The recipient is whoever loses something — the client's access is what ends. The port keeps provider SDKs out of the job processors, so the pipeline is buildable and testable against a `console` adapter that needs no credentials, with SES as the intended production adapter.
+
+Ordering is the reliability decision. Marking first is at-most-once: a provider timeout would flag the album as warned, nobody would hear anything, and the album would be deleted on schedule. Sending first is at-least-once — a failure throws, the mark is skipped, and the next daily run retries.
+
+| Why this works | Tradeoff |
+|---|---|
+| Worst case is a duplicate email, against a warning silently missed before an irreversible deletion. Milestones are 60+ days apart, so a day's retry costs nothing | An adapter that swallows its own errors breaks the guarantee — senders must throw. The `console` adapter never fails, so the retry path is exercised by tests, not in local use |
+
+---
+
+#### D-25 — Deletion gated on the final warning
+**Decision:** `delete-expired` only touches albums with `warned_7_at IS NOT NULL`. The column asserts that the warning **step completed**, not that a human received anything.
+
+**Rationale:** D-04 makes deletion irreversible and cites the three-warning pipeline as the mitigation. That mitigation is only real if a failed pipeline stops the deletion — otherwise a mail outage through the run-up means silent permanent data loss.
+
+The second half of the decision is what keeps the gate from becoming a leak. A shoot album whose client was deleted (`client_id` is `ON DELETE SET NULL`) has nobody to warn and never will, so it is marked warned without a send. Left NULL, the gate would preserve that album — and its Cloudinary assets — indefinitely, which is exactly the unbounded storage cost D-03 exists to avoid.
+
+| Why this works | Tradeoff |
+|---|---|
+| Turns the warning pipeline from advisory into a precondition. Albums arrive late rather than disappearing unannounced | A prolonged outage defers deletions and storage cost with them. Needs monitoring on albums past expiry still awaiting a warning |
 
 ---
 

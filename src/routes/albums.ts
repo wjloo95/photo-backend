@@ -50,6 +50,11 @@ function addThreeYears(date: Date): Date {
 // accessExpiresAt is always computed server-side from shootDate — never
 // accepted from the request body, so a caller can't grant themselves a
 // longer (or shorter) retention window than the shoot_date + 3 years policy.
+//
+// Only shoot albums get one. Expiry exists because a client's access to their
+// shoot is time-limited; a portfolio album belongs to the photographer, has no
+// client, and never expires — so it is created with null (migration 020),
+// which is what keeps it out of the warning and deletion pipelines.
 export const createAlbum: RequestHandler = async (req, res, next) => {
   try {
     const { clientId, type, shootDate } = req.body;
@@ -68,14 +73,14 @@ export const createAlbum: RequestHandler = async (req, res, next) => {
     }
 
     const shootDateObj = new Date(shootDate);
-    const accessExpiresAt = addThreeYears(shootDateObj);
+    const isShoot = type === AlbumType.shoot;
 
     const album = await insertAlbum({
       photographerId: req.user!.id,
-      clientId: type === AlbumType.shoot ? clientId : null,
+      clientId: isShoot ? clientId : null,
       type,
       shootDate: shootDateObj,
-      accessExpiresAt,
+      accessExpiresAt: isShoot ? addThreeYears(shootDateObj) : null,
     });
 
     res.status(201).json(album);

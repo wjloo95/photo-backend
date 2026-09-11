@@ -56,6 +56,8 @@ Migrations 015 onward alter what is already there rather than adding tables:
 019 form_responses snapshot their questions and inline their answers as
     JSONB; form_answers dropped; started_at renamed assigned_at;
     template_id FK becomes ON DELETE RESTRICT
+020 albums.access_expires_at becomes nullable — portfolio albums never
+    expire; CHECK constraint ties the column to album type
 ```
 
 ---

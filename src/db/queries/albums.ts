@@ -9,7 +9,7 @@ interface AlbumRow {
   thumbnail_photo_id: string | null;
   type: Album['type'];
   shoot_date: Date;
-  access_expires_at: Date;
+  access_expires_at: Date | null; // null = never expires (portfolio)
   warned_90_at: Date | null;
   warned_30_at: Date | null;
   warned_7_at: Date | null;
@@ -47,7 +47,7 @@ export function rehydrateAlbumDates(album: Album): Album {
   return {
     ...album,
     shootDate: new Date(album.shootDate),
-    accessExpiresAt: new Date(album.accessExpiresAt),
+    accessExpiresAt: album.accessExpiresAt ? new Date(album.accessExpiresAt) : null,
     warned90At: album.warned90At ? new Date(album.warned90At) : null,
     warned30At: album.warned30At ? new Date(album.warned30At) : null,
     warned7At: album.warned7At ? new Date(album.warned7At) : null,
@@ -67,7 +67,13 @@ export interface CreateAlbumFields {
   clientId: string | null;
   type: AlbumType;
   shootDate: Date;
-  accessExpiresAt: Date;
+  /**
+   * Null for portfolio albums, which never expire. The CHECK constraint from
+   * migration 020 rejects the two mismatched combinations, so a caller that
+   * gets this wrong fails loudly at the insert rather than creating an album
+   * that quietly does or doesn't expire.
+   */
+  accessExpiresAt: Date | null;
 }
 
 export async function insertAlbum(fields: CreateAlbumFields): Promise<Album> {
@@ -114,6 +120,26 @@ export async function deleteAlbumById(id: string): Promise<void> {
   await pool.query('DELETE FROM albums WHERE id = $1', [id]);
 }
 /**
+ * An album due a warning, plus the address the warning goes to.
+ *
+ * The recipient is the client, so this spans albums -> clients -> users. It is
+ * a LEFT JOIN and clientEmail is nullable because albums.client_id is
+ * ON DELETE SET NULL (migration 004): deleting a client detaches their shoot
+ * albums rather than removing them, so an album can outlive the only person it
+ * would ever have been sent to. The processor treats that as "nobody to warn"
+ * rather than as an error — see expiryProcessor.ts.
+ */
+export interface AlbumNeedingWarning extends Album {
+  clientEmail: string | null;
+  clientName: string | null;
+}
+
+interface AlbumNeedingWarningRow extends AlbumRow {
+  client_email: string | null;
+  client_name: string | null;
+}
+
+/**
  * Albums due an expiry warning at the 90/30/7-day mark.
  *
  * The predicate is `<=` rather than `=` deliberately. Matching the exact day
@@ -131,16 +157,31 @@ export async function deleteAlbumById(id: string): Promise<void> {
  * is safe because `days` is typed to the three literals and the column name is
  * chosen from them here — no caller-supplied string ever reaches the SQL.
  */
-export async function getAlbumsNeedingWarning(days: 90 | 30 | 7): Promise<Album[]> {
+export async function getAlbumsNeedingWarning(days: 90 | 30 | 7): Promise<AlbumNeedingWarning[]> {
   const warnedColumn = days === 90 ? 'warned_90_at' : days === 30 ? 'warned_30_at' : 'warned_7_at';
 
-  const result = await pool.query<AlbumRow>(
-    `SELECT * FROM albums
-     WHERE access_expires_at <= NOW() + make_interval(days => $1)
-     AND ${warnedColumn} IS NULL`,
+  // Portfolio albums need no `type` predicate here: their access_expires_at is
+  // NULL (migration 020), and `NULL <= anything` is NULL rather than TRUE, so
+  // they are excluded by the comparison itself.
+  //
+  // `a.*` plus two aliased columns, never `u.*` — node-postgres keys each row
+  // by column name and keeps only the last of a duplicated one, so selecting
+  // the users row whole would overwrite the album's id with the user's.
+  const result = await pool.query<AlbumNeedingWarningRow>(
+    `SELECT a.*, u.email AS client_email, u.name AS client_name
+     FROM albums a
+     LEFT JOIN clients c ON c.user_id = a.client_id
+     LEFT JOIN users u   ON u.id = c.user_id
+     WHERE a.access_expires_at <= NOW() + make_interval(days => $1)
+     AND a.${warnedColumn} IS NULL`,
     [days],
   );
-  return result.rows.map(toAlbum);
+
+  return result.rows.map((row) => ({
+    ...toAlbum(row),
+    clientEmail: row.client_email,
+    clientName: row.client_name,
+  }));
 }
 
 export enum WarningColumn {
@@ -153,7 +194,30 @@ export async function markAlbumWarned(albumId: string, field: WarningColumn): Pr
   await pool.query(`UPDATE albums SET ${field} = NOW() WHERE id = $1`, [albumId]);
 }
 
+/**
+ * Albums past their access_expires_at, for the deletion sweep.
+ *
+ * Portfolio albums never appear: they carry NULL (migration 020), and
+ * `NULL < NOW()` is NULL, not TRUE. That exclusion is guaranteed by the
+ * albums_expiry_matches_type CHECK rather than by convention — nothing can
+ * put a date on a portfolio album for this query to find.
+ *
+ * `warned_7_at IS NOT NULL` is the safety gate on an irreversible operation:
+ * an album is only deleted once its final warning step has completed. If the
+ * mail provider was down for the whole run-up, warned_7_at is still NULL and
+ * the album is skipped rather than destroyed silently — it gets warned and
+ * deleted once email recovers, days late but not lost.
+ *
+ * Note what the column asserts: the warning *step* completed, not that a human
+ * received anything. An album whose client was deleted has nobody to warn, and
+ * the processor marks it warned anyway — otherwise this predicate would keep
+ * it, and its Cloudinary assets, alive forever.
+ */
 export async function getExpiredAlbums(): Promise<Album[]> {
-  const result = await pool.query<AlbumRow>('SELECT * FROM albums WHERE access_expires_at < NOW()');
+  const result = await pool.query<AlbumRow>(
+    `SELECT * FROM albums
+     WHERE access_expires_at < NOW()
+     AND warned_7_at IS NOT NULL`,
+  );
   return result.rows.map(toAlbum);
 }

@@ -20,7 +20,7 @@ interface AlbumSummary {
   thumbnailPhotoId: string | null;
   type: Album['type'];
   shootDate: Date;
-  accessExpiresAt: Date;
+  accessExpiresAt: Date | null; // null for portfolio albums
   createdAt: Date;
 }
 

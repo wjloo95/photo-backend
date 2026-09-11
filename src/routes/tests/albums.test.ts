@@ -13,7 +13,7 @@ jest.mock('../../db/queries/albums', () => ({
   rehydrateAlbumDates: (album: Album) => ({
     ...album,
     shootDate: new Date(album.shootDate),
-    accessExpiresAt: new Date(album.accessExpiresAt),
+    accessExpiresAt: album.accessExpiresAt ? new Date(album.accessExpiresAt) : null,
     warned90At: album.warned90At ? new Date(album.warned90At) : null,
     warned30At: album.warned30At ? new Date(album.warned30At) : null,
     warned7At: album.warned7At ? new Date(album.warned7At) : null,
@@ -148,7 +148,15 @@ const shootAlbum: Album = {
   createdAt: new Date('2026-01-01T00:00:00Z'),
 };
 
-const portfolioAlbum: Album = { ...shootAlbum, id: 'album-2', clientId: null, type: AlbumType.portfolio };
+// Portfolio albums never expire (migration 020), so the fixture carries the
+// null the CHECK constraint requires — not shootAlbum's date.
+const portfolioAlbum: Album = {
+  ...shootAlbum,
+  id: 'album-2',
+  clientId: null,
+  type: AlbumType.portfolio,
+  accessExpiresAt: null,
+};
 
 const makeReq = (
   opts: { params?: object; user?: User; body?: object; files?: unknown; query?: object } = {},
@@ -221,6 +229,48 @@ describe('createAlbum', () => {
       expect.objectContaining({ clientId: null, type: AlbumType.portfolio }),
     );
     expect(res.status).toHaveBeenCalledWith(201);
+  });
+
+  // Expiry exists because a client's access to their shoot is time-limited. A
+  // portfolio album belongs to the photographer and has no client to lose
+  // access, so it never expires — which is also what keeps it out of the
+  // warning and deletion pipelines, since both filter on a non-null date.
+  it('creates a portfolio album with a null accessExpiresAt, so it never expires', async () => {
+    insertAlbumMock.mockResolvedValue(portfolioAlbum);
+
+    await createAlbum(
+      makeReq({
+        user: photographer,
+        body: { type: AlbumType.portfolio, shootDate: '2026-01-01' },
+      }),
+      makeRes(),
+      jest.fn() as NextFunction,
+    );
+
+    expect(insertAlbumMock).toHaveBeenCalledWith(
+      expect.objectContaining({ accessExpiresAt: null }),
+    );
+  });
+
+  // Regression: computing the date unconditionally and only branching on
+  // clientId is the easy mistake — it type-checks, inserts fine, and puts
+  // portfolio albums back on the deletion path three years later.
+  it('still computes shootDate + 3 years for a shoot album', async () => {
+    insertAlbumMock.mockResolvedValue(shootAlbum);
+    getClientByUserIdMock.mockResolvedValue({ userId: 'client-1', photographerId: 'photog-1' });
+
+    await createAlbum(
+      makeReq({
+        user: photographer,
+        body: { clientId: 'client-1', type: AlbumType.shoot, shootDate: '2026-01-01' },
+      }),
+      makeRes(),
+      jest.fn() as NextFunction,
+    );
+
+    expect(insertAlbumMock).toHaveBeenCalledWith(
+      expect.objectContaining({ accessExpiresAt: new Date('2029-01-01') }),
+    );
   });
 
   it('forwards a 400 AppError when creating a shoot album without a clientId', async () => {

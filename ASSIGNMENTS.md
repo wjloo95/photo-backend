@@ -117,7 +117,7 @@
 
 ### 4.1 — Album CRUD
 
-- [ ] `POST /albums` — photographer only. Compute `access_expires_at = shoot_date + 3 years` **server-side** — do not accept it from the request body
+- [ ] `POST /albums` — photographer only. Compute `access_expires_at = shoot_date + 3 years` **server-side** — do not accept it from the request body. Shoot albums only: portfolio albums are created with `null` and never expire (migration 020)
 - [ ] `GET /albums/:id` — both roles. A client may only view albums where `client_id` matches their own ID
 - [ ] `PATCH /albums/:id` — photographer only, own albums only
 - [ ] `DELETE /albums/:id` — photographer only
@@ -165,9 +165,10 @@
   - Daily schedule: `0 8 * * *` (08:00 UTC)
   - Called once at worker startup
 - [ ] `src/jobs/processors/expiryProcessor.ts` — for each job:
-  - Queries albums where `access_expires_at` is within the warning window **and** the relevant `warned_*_at` is NULL
-  - Sets `warned_*_at = NOW()` to prevent duplicate warnings
-  - For `delete-expired`: deletes files from Cloudinary, then deletes album rows from DB
+  - Queries albums where `access_expires_at` is within the warning window **and** the relevant `warned_*_at` is NULL. Portfolio albums carry a NULL expiry, so the comparison excludes them on its own — no `type` predicate needed
+  - Emails the album's client, **then** sets `warned_*_at = NOW()` — a failed send leaves the column NULL so the next daily run retries, rather than recording a warning nobody received
+  - An album whose client was deleted has nobody to warn: mark it warned anyway, or the deletion gate below holds it forever
+  - For `delete-expired`: only touches albums with `warned_7_at IS NOT NULL` — deletion is irreversible, so an album that never got its final warning waits. Deletes files from Cloudinary, then deletes album rows from DB
 
 ---
 

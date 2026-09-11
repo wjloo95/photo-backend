@@ -1,4 +1,5 @@
 import { Album, AlbumType, Photo, PhotoStatus } from '../../../types';
+import type { AlbumNeedingWarning } from '../../../db/queries/albums';
 
 jest.mock('../../../db/queries/albums', () => ({
   deleteAlbumById: jest.fn(),
@@ -38,6 +39,15 @@ jest.mock('cloudinary', () => ({
   },
 }));
 
+// email/index.ts reads EMAIL_PROVIDER from config/env at import time, and
+// config/env process.exit(1)s when the env isn't fully populated — which it
+// isn't under jest. Mocking the module keeps the processor's dependency on the
+// EmailSender *interface* under test without dragging in env validation or a
+// real adapter, which is the point of the port in the first place.
+jest.mock('../../../email', () => ({
+  emailSender: { send: jest.fn() },
+}));
+
 // processEachSafely itself is NOT mocked — it's already covered by its own
 // test file, and using the real implementation here confirms expiryProcessor
 // actually composes correctly with it (isolation, aggregate throw, and the
@@ -56,12 +66,14 @@ import {
   getAllPhotosForAlbum,
 } from '../../../db/queries/photos';
 import { v2 as cloudinary } from 'cloudinary';
+import { emailSender } from '../../../email';
 import { processExpiryJob } from '../expiryProcessor';
 
 const deleteAlbumByIdMock = deleteAlbumById as jest.Mock;
 const getAlbumsNeedingWarningMock = getAlbumsNeedingWarning as jest.Mock;
 const getExpiredAlbumsMock = getExpiredAlbums as jest.Mock;
 const markAlbumWarnedMock = markAlbumWarned as jest.Mock;
+const sendMock = emailSender.send as jest.Mock;
 const deletePhotoByIdMock = deletePhotoById as jest.Mock;
 const getAlbumOwnersForPhotoMock = getAlbumOwnersForPhoto as jest.Mock;
 const getAllPhotosForAlbumMock = getAllPhotosForAlbum as jest.Mock;
@@ -84,6 +96,18 @@ function album(overrides: Partial<Album> = {}): Album {
   };
 }
 
+// getAlbumsNeedingWarning returns the album joined to its client's address,
+// so the warning path's fixture carries a recipient. clientEmail is nullable
+// because albums.client_id is ON DELETE SET NULL.
+function albumToWarn(overrides: Partial<AlbumNeedingWarning> = {}): AlbumNeedingWarning {
+  return {
+    ...album(),
+    clientEmail: 'client@example.com',
+    clientName: 'Casey Client',
+    ...overrides,
+  };
+}
+
 function photo(overrides: Partial<Photo> = {}): Photo {
   return {
     id: 'photo-1',
@@ -99,6 +123,7 @@ function photo(overrides: Partial<Photo> = {}): Photo {
 beforeEach(() => {
   jest.resetAllMocks();
   jest.spyOn(console, 'error').mockImplementation(() => undefined);
+  jest.spyOn(console, 'warn').mockImplementation(() => undefined);
 });
 
 describe.each([
@@ -107,7 +132,10 @@ describe.each([
   { jobName: ExpiryJobName.Warn7Days, days: 7, column: WarningColumn.Warned7 },
 ])('processExpiryJob — $jobName', ({ jobName, days, column }) => {
   it(`queries albums needing a ${days}-day warning and marks each one warned`, async () => {
-    getAlbumsNeedingWarningMock.mockResolvedValue([album({ id: 'album-1' }), album({ id: 'album-2' })]);
+    getAlbumsNeedingWarningMock.mockResolvedValue([
+      albumToWarn({ id: 'album-1' }),
+      albumToWarn({ id: 'album-2' }),
+    ]);
     markAlbumWarnedMock.mockResolvedValue(undefined);
 
     await processExpiryJob(jobName);
@@ -125,10 +153,75 @@ describe.each([
   });
 
   it('propagates a failure from markAlbumWarned so the job fails and retries', async () => {
-    getAlbumsNeedingWarningMock.mockResolvedValue([album()]);
+    getAlbumsNeedingWarningMock.mockResolvedValue([albumToWarn()]);
     markAlbumWarnedMock.mockRejectedValue(new Error('connection lost'));
 
     await expect(processExpiryJob(jobName)).rejects.toThrow();
+  });
+
+  it("emails the album's client before marking it warned", async () => {
+    getAlbumsNeedingWarningMock.mockResolvedValue([albumToWarn()]);
+
+    await processExpiryJob(jobName);
+
+    expect(sendMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        to: 'client@example.com',
+        subject: expect.stringContaining(`${days} days`),
+      }),
+    );
+    expect(sendMock.mock.invocationCallOrder[0]).toBeLessThan(
+      markAlbumWarnedMock.mock.invocationCallOrder[0],
+    );
+  });
+
+  // The ordering above is the whole reliability story. Marking first would be
+  // at-most-once: a provider timeout would flag the album as warned, nobody
+  // would hear anything, and getExpiredAlbums would delete it on schedule.
+  it('does not mark an album warned when the send fails, so tomorrow retries it', async () => {
+    getAlbumsNeedingWarningMock.mockResolvedValue([albumToWarn()]);
+    sendMock.mockRejectedValue(new Error('smtp timeout'));
+
+    await expect(processExpiryJob(jobName)).rejects.toThrow();
+    expect(markAlbumWarnedMock).not.toHaveBeenCalled();
+  });
+
+  it('still warns the other albums when one send fails', async () => {
+    getAlbumsNeedingWarningMock.mockResolvedValue([
+      albumToWarn({ id: 'album-1' }),
+      albumToWarn({ id: 'album-2', clientEmail: 'other@example.com' }),
+    ]);
+    sendMock.mockRejectedValueOnce(new Error('smtp timeout')).mockResolvedValue(undefined);
+
+    await expect(processExpiryJob(jobName)).rejects.toThrow();
+
+    expect(markAlbumWarnedMock).not.toHaveBeenCalledWith('album-1', column);
+    expect(markAlbumWarnedMock).toHaveBeenCalledWith('album-2', column);
+  });
+
+  // albums.client_id is ON DELETE SET NULL, so a shoot album can outlive the
+  // only person it would have been sent to. It still has to be marked: the
+  // deletion gate in getExpiredAlbums requires warned_7_at, so leaving it NULL
+  // would keep the album — and its Cloudinary assets — alive forever.
+  it('marks an album with no client warned without sending anything', async () => {
+    getAlbumsNeedingWarningMock.mockResolvedValue([
+      albumToWarn({ clientId: null, clientEmail: null, clientName: null }),
+    ]);
+
+    await processExpiryJob(jobName);
+
+    expect(sendMock).not.toHaveBeenCalled();
+    expect(markAlbumWarnedMock).toHaveBeenCalledWith('album-1', column);
+  });
+
+  it('addresses the client by name and names the deletion date', async () => {
+    getAlbumsNeedingWarningMock.mockResolvedValue([albumToWarn()]);
+
+    await processExpiryJob(jobName);
+
+    const [message] = sendMock.mock.calls[0];
+    expect(message.text).toContain('Casey Client');
+    expect(message.text).toContain('2023-01-01');
   });
 });
 

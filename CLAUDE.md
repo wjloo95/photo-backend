@@ -60,6 +60,8 @@ TTL targets from architecture decisions: album photo list 300s, album metadata 9
 
 **BullMQ queues:** `photoQueue` (triggered on upload) and `expiryQueue` (daily cron). Both queues pass `host`/`port` connection options rather than an ioredis instance — this avoids the dual-package type clash between ioredis and BullMQ's internal ioredis copy.
 
+**Email:** never import a provider SDK directly. `src/email/` exposes an `EmailSender` port and one instance (`emailSender`) chosen by `EMAIL_PROVIDER`; the default `console` adapter prints instead of sending so background jobs run locally without credentials. Senders must throw on failure — the expiry pipeline sends *before* writing `warned_*_at`, and relies on a throw to skip that write so the next run retries.
+
 **Env vars:** add to `.env.example` + add to the Zod schema in `src/config/env.ts`. The server exits on startup with a clear message if any required var is missing.
 
 ### Schema summary
