@@ -325,7 +325,7 @@ describe('processExpiryJob — delete-expired', () => {
     expect(cacheDelMock).not.toHaveBeenCalled();
   });
 
-  it.each([[PhotoStatus.processing]])(
+  it.each([[PhotoStatus.processing], [PhotoStatus.failed]])(
     'deletes a never-uploaded (%s, empty base_path) photo and its album without calling Cloudinary',
     async (status) => {
       getExpiredAlbumsMock.mockResolvedValue([album({ id: 'album-1' })]);

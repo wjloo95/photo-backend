@@ -220,3 +220,16 @@ export async function markPhotoReady(
     [photoId, basePath, width, height],
   );
 }
+
+// After an upload job's final attempt, every photo of the batch that is still
+// processing is never going to finish. The status guard is what keeps this
+// safe to run over the whole batch: photos that did finish are 'ready' and
+// left untouched, even if one finished concurrently. base_path, width and
+// height stay empty, as they were.
+export async function markPhotosFailed(photoIds: string[]): Promise<void> {
+  await pool.query(
+    `UPDATE photos SET status = 'failed'
+     WHERE id = ANY($1::uuid[]) AND status = 'processing'`,
+    [photoIds],
+  );
+}

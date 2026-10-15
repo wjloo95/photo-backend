@@ -22,6 +22,7 @@ import {
   removePhotoFromAlbum,
   deletePhotosFromAlbum,
   deletePhotoById,
+  markPhotosFailed,
 } from '../photos';
 import { PhotoStatus } from '../../../types';
 import { pool } from '../../../config/database';
@@ -373,5 +374,20 @@ describe('deletePhotoById', () => {
     expect(mockQuery).toHaveBeenCalledWith(expect.stringContaining('DELETE FROM photos'), [
       'photo-1',
     ]);
+  });
+});
+
+describe('markPhotosFailed', () => {
+  it('marks only the listed photos that are still processing as failed', async () => {
+    mockQuery.mockResolvedValue({ rowCount: 1 });
+
+    await markPhotosFailed(['photo-1', 'photo-2']);
+
+    const [sql, params] = mockQuery.mock.calls[0];
+    expect(sql).toContain("SET status = 'failed'");
+    expect(sql).toContain('id = ANY($1::uuid[])');
+    // The guard that keeps an already-ready photo from being overwritten.
+    expect(sql).toContain("AND status = 'processing'");
+    expect(params).toEqual([['photo-1', 'photo-2']]);
   });
 });

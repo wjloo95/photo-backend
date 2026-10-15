@@ -8,7 +8,7 @@
  */
 import { Worker, Job } from 'bullmq';
 import { PHOTO_QUEUE_NAME, ProcessBatchJobData, PhotoJobName } from './queues/photoQueue';
-import { processPhotoBatch } from './processors/photoProcessor';
+import { failRemainingPhotos, processPhotoBatch } from './processors/photoProcessor';
 import { EXPIRY_QUEUE_NAME, ExpiryJobData } from './queues/expiryQueue';
 import { processExpiryJob } from './processors/expiryProcessor';
 import { registerExpirySchedules } from './schedulers/expiryScheduler';
@@ -31,9 +31,37 @@ registerExpirySchedules().catch((err) => {
 // ProcessBatch job — PhotoJobName is an enum specifically so this queue can
 // carry more than one kind of job later without this dispatch silently
 // mishandling the new kind.
+//
+// A ProcessBatch job that throws on its final attempt marks the batch's
+// remaining processing photos 'failed' before rethrowing. That happens here,
+// inside the processor, rather than in a 'failed' event listener: the listener
+// fires on every failed attempt, and the queue doesn't await it, so an error
+// thrown there would be lost. Here it is awaited and the original error still
+// fails the job. "Final" uses BullMQ's own retry rule (Job.shouldRetryJob
+// retries while attemptsMade + 1 < attempts).
+//
+// Known gap: a worker that crashes mid-job never reaches this catch. BullMQ
+// reruns a stalled job, but once it has stalled more than maxStalledCount
+// times it fails it outright, without calling this processor, and its photos
+// stay 'processing'. Rare, and not handled.
+function isFinalAttempt(job: Job): boolean {
+  return job.attemptsMade + 1 >= (job.opts.attempts ?? 1);
+}
+
 const photoWorkerProcessor = async (job: Job<ProcessBatchJobData>) => {
   if (job.name === PhotoJobName.ProcessBatch) {
-    await processPhotoBatch(job.data);
+    try {
+      await processPhotoBatch(job.data);
+    } catch (err) {
+      if (isFinalAttempt(job)) {
+        // Logged rather than thrown, so the job fails with the processing
+        // error rather than this one.
+        await failRemainingPhotos(job.data).catch((markErr) => {
+          console.error(`job ${job.id}: could not mark remaining photos failed`, markErr);
+        });
+      }
+      throw err;
+    }
   } else {
     console.error(`Unknown job name: ${job.name}`);
   }

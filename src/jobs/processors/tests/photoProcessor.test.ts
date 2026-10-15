@@ -4,6 +4,7 @@ import { Photo, PhotoStatus } from '../../../types';
 jest.mock('../../../db/queries/photos', () => ({
   getPhotoById: jest.fn(),
   markPhotoReady: jest.fn(),
+  markPhotosFailed: jest.fn(),
 }));
 
 jest.mock('cloudinary', () => ({
@@ -36,14 +37,15 @@ jest.mock('../../../config/uploads', () => ({ UPLOAD_TMP_DIR: '/tmp/sys-photo-up
 
 // Importing this module runs cloudinary.config(...) as a side effect, once,
 // here — before any beforeEach has a chance to clear cloudinaryConfigMock.
-import { processPhotoBatch } from '../photoProcessor';
-import { getPhotoById, markPhotoReady } from '../../../db/queries/photos';
+import { failRemainingPhotos, processPhotoBatch } from '../photoProcessor';
+import { getPhotoById, markPhotoReady, markPhotosFailed } from '../../../db/queries/photos';
 import { v2 as cloudinary } from 'cloudinary';
 import { unlink } from 'node:fs/promises';
 import cache from '../../../cache';
 
 const getPhotoByIdMock = getPhotoById as jest.Mock;
 const markPhotoReadyMock = markPhotoReady as jest.Mock;
+const markPhotosFailedMock = markPhotosFailed as jest.Mock;
 const cloudinaryConfigMock = cloudinary.config as jest.Mock;
 const uploadMock = cloudinary.uploader.upload as jest.Mock;
 const unlinkMock = unlink as jest.Mock;
@@ -289,5 +291,31 @@ describe('processPhotoBatch — per-photo failure isolation', () => {
       processPhotoBatch({ photoIds: ['photo-1'], albumId: 'album-1' }),
     ).resolves.toBeUndefined();
     expect(uploadMock).toHaveBeenCalled();
+  });
+});
+
+describe('failRemainingPhotos', () => {
+  beforeEach(() => {
+    markPhotosFailedMock.mockReset();
+  });
+
+  it("marks the batch's photos failed, then clears the album's photo list", async () => {
+    markPhotosFailedMock.mockResolvedValue(undefined);
+
+    await failRemainingPhotos({ photoIds: ['photo-1', 'photo-2'], albumId: 'album-1' });
+
+    expect(markPhotosFailedMock).toHaveBeenCalledWith(['photo-1', 'photo-2']);
+    expect(cacheDelMock).toHaveBeenCalledWith('album:photos:v2:album-1');
+    expect(markPhotosFailedMock.mock.invocationCallOrder[0]).toBeLessThan(
+      cacheDelMock.mock.invocationCallOrder[0],
+    );
+  });
+
+  it('leaves the staged files in place for a later retry', async () => {
+    markPhotosFailedMock.mockResolvedValue(undefined);
+
+    await failRemainingPhotos({ photoIds: ['photo-1'], albumId: 'album-1' });
+
+    expect(unlinkMock).not.toHaveBeenCalled();
   });
 });

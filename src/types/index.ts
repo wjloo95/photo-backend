@@ -25,6 +25,7 @@ export enum AlbumType {
 export enum PhotoStatus {
   processing = 'processing',
   ready = 'ready',
+  failed = 'failed',
 }
 
 export enum InviteStatus {
@@ -121,7 +122,7 @@ export interface Album {
 export interface Photo {
   id: string;
   basePath: string;         // Cloudinary key prefix
-  status: PhotoStatus;      // 'processing' until Cloudinary confirms; then 'ready'
+  status: PhotoStatus;      // 'processing' until Cloudinary confirms; then 'ready' ('failed' after the upload job's final retry)
   width: number | null;     // null until the processor reads it back from Cloudinary
   height: number | null;    // null until the processor reads it back from Cloudinary
   uploadedAt: Date;

@@ -127,7 +127,7 @@ PostgreSQL via AWS RDS. All entities use UUID primary keys. Foreign keys enforce
 |---|---|---|
 | id | uuid | PK |
 | base_path | string | Cloudinary key |
-| status | enum('processing', 'ready') | |
+| status | enum('processing', 'ready', 'failed') | 'failed' once the upload job's final retry fails (migration 021) |
 | width | integer | nullable — set by the processor once Cloudinary reports it |
 | height | integer | nullable — set by the processor once Cloudinary reports it |
 | uploaded_at | timestamp | |

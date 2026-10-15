@@ -32,6 +32,7 @@ jest.mock('bullmq', () => {
 
 jest.mock('../processors/photoProcessor', () => ({
   processPhotoBatch: jest.fn(),
+  failRemainingPhotos: jest.fn(),
 }));
 
 jest.mock('../processors/expiryProcessor', () => ({
@@ -45,7 +46,7 @@ jest.mock('../schedulers/expiryScheduler', () => ({
 import { Worker } from 'bullmq';
 import { PHOTO_QUEUE_NAME, PhotoJobName } from '../queues/photoQueue';
 import { EXPIRY_QUEUE_NAME } from '../queues/expiryQueue';
-import { processPhotoBatch } from '../processors/photoProcessor';
+import { failRemainingPhotos, processPhotoBatch } from '../processors/photoProcessor';
 import { processExpiryJob } from '../processors/expiryProcessor';
 import { registerExpirySchedules } from '../schedulers/expiryScheduler';
 // Importing this module runs its top-level side effects (constructing both
@@ -55,6 +56,7 @@ import '../worker';
 
 const WorkerConstructorMock = Worker as unknown as jest.Mock;
 const processPhotoBatchMock = processPhotoBatch as jest.Mock;
+const failRemainingPhotosMock = failRemainingPhotos as jest.Mock;
 const processExpiryJobMock = processExpiryJob as jest.Mock;
 const registerExpirySchedulesMock = registerExpirySchedules as jest.Mock;
 
@@ -73,6 +75,8 @@ function getPhotoWorkerProcessor() {
     name: string;
     data: unknown;
     id?: string;
+    attemptsMade?: number;
+    opts?: { attempts?: number };
   }) => Promise<void>;
 }
 
@@ -86,6 +90,7 @@ function getExpiryWorkerProcessor() {
 
 beforeEach(() => {
   processPhotoBatchMock.mockReset();
+  failRemainingPhotosMock.mockReset();
   processExpiryJobMock.mockReset();
   jest.spyOn(console, 'error').mockImplementation(() => undefined);
 });
@@ -152,7 +157,12 @@ describe('worker.ts — photo job dispatch', () => {
     const workerProcessor = getPhotoWorkerProcessor();
 
     await expect(
-      workerProcessor({ name: PhotoJobName.ProcessBatch, data: { photoIds: [], albumId: 'a' } }),
+      workerProcessor({
+        name: PhotoJobName.ProcessBatch,
+        data: { photoIds: [], albumId: 'a' },
+        attemptsMade: 0,
+        opts: { attempts: 3 },
+      }),
     ).rejects.toThrow(err);
   });
 
@@ -163,6 +173,74 @@ describe('worker.ts — photo job dispatch', () => {
 
     expect(processPhotoBatchMock).not.toHaveBeenCalled();
     expect(console.error).toHaveBeenCalledWith(expect.stringContaining('some-future-job'));
+  });
+});
+
+describe('worker.ts — marking photos failed after the final attempt', () => {
+  const jobData = { photoIds: ['photo-1', 'photo-2'], albumId: 'album-1' };
+  const job = (
+    attemptsMade: number,
+  ): {
+    id: string;
+    name: string;
+    data: typeof jobData;
+    attemptsMade: number;
+    opts: { attempts?: number };
+  } => ({
+    id: 'job-1',
+    name: PhotoJobName.ProcessBatch,
+    data: jobData,
+    attemptsMade,
+    opts: { attempts: 3 },
+  });
+
+  it.each([[0], [1]])(
+    'leaves the photos processing when attempt %i of 0–2 fails, since BullMQ will retry',
+    async (attemptsMade) => {
+      processPhotoBatchMock.mockRejectedValue(new Error('1/2 photos failed to process'));
+
+      await expect(getPhotoWorkerProcessor()(job(attemptsMade))).rejects.toThrow();
+
+      expect(failRemainingPhotosMock).not.toHaveBeenCalled();
+    },
+  );
+
+  it('marks the remaining photos failed when the final attempt fails, then still fails the job', async () => {
+    const err = new Error('1/2 photos failed to process');
+    processPhotoBatchMock.mockRejectedValue(err);
+    failRemainingPhotosMock.mockResolvedValue(undefined);
+
+    await expect(getPhotoWorkerProcessor()(job(2))).rejects.toThrow(err);
+
+    expect(failRemainingPhotosMock).toHaveBeenCalledWith(jobData);
+  });
+
+  it('does not mark anything failed when the final attempt succeeds', async () => {
+    processPhotoBatchMock.mockResolvedValue(undefined);
+
+    await getPhotoWorkerProcessor()(job(2));
+
+    expect(failRemainingPhotosMock).not.toHaveBeenCalled();
+  });
+
+  it('treats a job with no retries configured as on its final attempt', async () => {
+    processPhotoBatchMock.mockRejectedValue(new Error('boom'));
+    failRemainingPhotosMock.mockResolvedValue(undefined);
+
+    await expect(getPhotoWorkerProcessor()({ ...job(0), opts: {} })).rejects.toThrow('boom');
+
+    expect(failRemainingPhotosMock).toHaveBeenCalledWith(jobData);
+  });
+
+  it('still fails the job with the processing error when marking the photos failed also fails', async () => {
+    const err = new Error('1/2 photos failed to process');
+    const markErr = new Error('connection lost');
+    processPhotoBatchMock.mockRejectedValue(err);
+    failRemainingPhotosMock.mockRejectedValue(markErr);
+
+    await expect(getPhotoWorkerProcessor()(job(2))).rejects.toThrow(err);
+
+    expect(console.error).toHaveBeenCalledWith(expect.stringContaining('job-1'), markErr);
   });
 });
 

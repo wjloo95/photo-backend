@@ -9,7 +9,7 @@ import cache from '../../cache';
 import { albumPhotosCacheKey } from '../../cache/keys';
 import { env } from '../../config/env';
 import { UPLOAD_TMP_DIR } from '../../config/uploads';
-import { getPhotoById, markPhotoReady } from '../../db/queries/photos';
+import { getPhotoById, markPhotoReady, markPhotosFailed } from '../../db/queries/photos';
 import { PhotoStatus } from '../../types';
 import { ProcessBatchJobData } from '../queues/photoQueue';
 import { processEachSafely } from './processEachSafely';
@@ -76,4 +76,19 @@ export async function processPhotoBatch(data: ProcessBatchJobData): Promise<void
     },
     'photos',
   );
+}
+
+/**
+ * Called by worker.ts once a ProcessBatch job has failed its final attempt:
+ * every photo in the batch still processing becomes 'failed', and the album's
+ * photo list is cleared so processingCount drops right away instead of
+ * promising "more on the way" indefinitely.
+ *
+ * Failed photos' staged files stay in UPLOAD_TMP_DIR on purpose: Phase 7's
+ * manual retry will need them. Until that exists nothing removes them, so
+ * they accumulate there, one per failed photo.
+ */
+export async function failRemainingPhotos(data: ProcessBatchJobData): Promise<void> {
+  await markPhotosFailed(data.photoIds);
+  await cache.del(albumPhotosCacheKey(data.albumId));
 }

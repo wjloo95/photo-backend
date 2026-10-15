@@ -887,6 +887,42 @@ describe('getAlbumPhotos', () => {
     expect(body!.processingCount).toBe(0);
   });
 
+  describe('with a failed photo', () => {
+    // photo-07 used to be processing; its upload job then failed for good.
+    beforeEach(() => {
+      getAllPhotosForAlbumMock.mockResolvedValue([
+        ...albumPhotos.slice(0, 6),
+        albumPhoto(7, at(3), PhotoStatus.failed),
+      ]);
+    });
+
+    it('drops it from processingCount, which counts processing photos only', async () => {
+      const { body } = await request();
+
+      expect(body!.processingCount).toBe(1);
+    });
+
+    it('leaves it out of ?status=ready', async () => {
+      const { body } = await request({ status: 'ready' });
+
+      expect(ids(body!.data)).not.toContain('photo-07');
+      expect(body!.total).toBe(5);
+    });
+
+    it('includes it, with empty dimensions, in the unfiltered (studio) list', async () => {
+      const { body } = await request();
+
+      expect(body!.total).toBe(7);
+      expect(body!.data[6]).toMatchObject({
+        id: 'photo-07',
+        status: PhotoStatus.failed,
+        basePath: '',
+        width: null,
+        height: null,
+      });
+    });
+  });
+
   it.each([['processing'], ['READY'], ['bogus']])(
     'treats an unknown status (%s) as absent',
     async (status) => {
