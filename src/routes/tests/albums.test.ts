@@ -30,7 +30,11 @@ jest.mock('../../db/queries/photos', () => ({
   getPhotoById: jest.fn(),
   getAllPhotosForAlbum: jest.fn(),
   // Real implementation, not a stub — same reasoning as rehydrateAlbumDates.
-  rehydratePhotoDates: (photo: Photo) => ({ ...photo, uploadedAt: new Date(photo.uploadedAt) }),
+  rehydrateAlbumPhotoDates: (photo: AlbumPhoto) => ({
+    ...photo,
+    uploadedAt: new Date(photo.uploadedAt),
+    addedAt: new Date(photo.addedAt),
+  }),
   getAlbumOwnersForPhoto: jest.fn(),
   addPhotoToAlbum: jest.fn(),
   removePhotoFromAlbum: jest.fn(),
@@ -78,6 +82,7 @@ import {
 import cache from '../../cache';
 import { photoQueue } from '../../jobs/queues/photoQueue';
 import { rename } from 'node:fs/promises';
+import type { AlbumPhoto } from '../../db/queries/photos';
 
 const insertAlbumMock = insertAlbum as jest.Mock;
 const getAlbumByIdMock = getAlbumById as jest.Mock;
@@ -476,7 +481,7 @@ describe('updateAlbumFromId', () => {
     expect(next).not.toHaveBeenCalled();
     // Invalidates the album's own metadata, not the (unrelated) photo list.
     expect(cacheDelMock).toHaveBeenCalledWith('album:meta:album-1');
-    expect(cacheDelMock).not.toHaveBeenCalledWith('album:photos:album-1');
+    expect(cacheDelMock).not.toHaveBeenCalledWith('album:photos:v2:album-1');
   });
 
   it('forwards errors from the query layer to next(err)', async () => {
@@ -532,7 +537,7 @@ describe('deleteAlbumFromId', () => {
     expect(res.json).not.toHaveBeenCalled();
     expect(next).not.toHaveBeenCalled();
     expect(cacheDelMock).toHaveBeenCalledWith('album:meta:album-1');
-    expect(cacheDelMock).not.toHaveBeenCalledWith('album:photos:album-1');
+    expect(cacheDelMock).not.toHaveBeenCalledWith('album:photos:v2:album-1');
   });
 
   it('forwards errors from the query layer to next(err)', async () => {
@@ -573,6 +578,13 @@ const createdPhotos: Photo[] = [
     uploadedAt: new Date('2026-01-01T00:00:00Z'),
   },
 ];
+
+// createdPhotos as getAllPhotosForAlbum lists them: with the album
+// membership's added_at, which a cache hit must rehydrate like uploadedAt.
+const listedPhotos: AlbumPhoto[] = createdPhotos.map((photo) => ({
+  ...photo,
+  addedAt: new Date('2026-01-02T00:00:00Z'),
+}));
 
 describe('createAlbumPhotosBatch', () => {
   beforeEach(() => {
@@ -664,7 +676,7 @@ describe('createAlbumPhotosBatch', () => {
     expect(res.json).toHaveBeenCalledWith(createdPhotos);
     expect(next).not.toHaveBeenCalled();
     // New photos change album membership, not the album's own fields.
-    expect(cacheDelMock).toHaveBeenCalledWith('album:photos:album-1');
+    expect(cacheDelMock).toHaveBeenCalledWith('album:photos:v2:album-1');
     expect(cacheDelMock).not.toHaveBeenCalledWith('album:meta:album-1');
   });
 
@@ -757,7 +769,7 @@ describe('getAlbumPhotos', () => {
     expect(getAlbumByIdMock).toHaveBeenCalledWith('album-1');
     expect(cacheSetMock).toHaveBeenCalledWith('album:meta:album-1', shootAlbum, 900);
     expect(getAllPhotosForAlbumMock).toHaveBeenCalledWith('album-1');
-    expect(cacheSetMock).toHaveBeenCalledWith('album:photos:album-1', createdPhotos, 300);
+    expect(cacheSetMock).toHaveBeenCalledWith('album:photos:v2:album-1', createdPhotos, 300);
     expect(res.json).toHaveBeenCalledWith(createdPhotos);
     expect(next).not.toHaveBeenCalled();
   });
@@ -780,7 +792,9 @@ describe('getAlbumPhotos', () => {
 
   it('reuses a cached photo list instead of querying the DB again', async () => {
     cacheGetMock.mockImplementation((key: string) =>
-      Promise.resolve(key === 'album:photos:album-1' ? createdPhotos : null),
+      Promise.resolve(
+        key === 'album:photos:v2:album-1' ? JSON.parse(JSON.stringify(listedPhotos)) : null,
+      ),
     );
     getAlbumByIdMock.mockResolvedValue(shootAlbum);
 
@@ -791,7 +805,7 @@ describe('getAlbumPhotos', () => {
     await getAlbumPhotos(req, res, next);
 
     expect(getAllPhotosForAlbumMock).not.toHaveBeenCalled();
-    expect(res.json).toHaveBeenCalledWith(createdPhotos);
+    expect(res.json).toHaveBeenCalledWith(listedPhotos);
   });
 
   it('responds with photos for the linked client', async () => {
@@ -959,7 +973,7 @@ describe('deleteAlbumPhotosBatch', () => {
     expect(next).not.toHaveBeenCalled();
     // Removing photos changes album membership, not the album's own fields —
     // regression check for the album:meta:/album:photos: key mixup.
-    expect(cacheDelMock).toHaveBeenCalledWith('album:photos:album-1');
+    expect(cacheDelMock).toHaveBeenCalledWith('album:photos:v2:album-1');
     expect(cacheDelMock).not.toHaveBeenCalledWith('album:meta:album-1');
   });
 
@@ -1061,7 +1075,7 @@ describe('addAlbumPhoto', () => {
     expect(next).not.toHaveBeenCalled();
     // Linking a photo in changes album membership, not the album's own fields —
     // regression check for the album:meta:/album:photos: key mixup.
-    expect(cacheDelMock).toHaveBeenCalledWith('album:photos:album-1');
+    expect(cacheDelMock).toHaveBeenCalledWith('album:photos:v2:album-1');
     expect(cacheDelMock).not.toHaveBeenCalledWith('album:meta:album-1');
   });
 
@@ -1124,7 +1138,7 @@ describe('removeAlbumPhoto', () => {
     expect(next).not.toHaveBeenCalled();
     // Unlinking a photo changes album membership, not the album's own fields —
     // regression check for the album:meta:/album:photos: key mixup.
-    expect(cacheDelMock).toHaveBeenCalledWith('album:photos:album-1');
+    expect(cacheDelMock).toHaveBeenCalledWith('album:photos:v2:album-1');
     expect(cacheDelMock).not.toHaveBeenCalledWith('album:meta:album-1');
   });
 

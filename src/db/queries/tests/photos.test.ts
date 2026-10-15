@@ -16,6 +16,7 @@ import {
   PhotoRow,
   getPhotoById,
   getPhotosForAlbum,
+  getAllPhotosForAlbum,
   getAlbumOwnersForPhoto,
   addPhotoToAlbum,
   removePhotoFromAlbum,
@@ -269,6 +270,20 @@ describe('getPhotosForAlbum', () => {
     const result = await getPhotosForAlbum(albumId, 20, 0);
 
     expect(result).toEqual([]);
+  });
+});
+
+describe('getAllPhotosForAlbum', () => {
+  it('orders by added_at (to the millisecond) then id, and carries added_at as addedAt', async () => {
+    const addedAt = new Date('2026-08-28T00:00:00Z');
+    mockQuery.mockResolvedValue({ rows: [{ ...photoRow('photo-1'), added_at: addedAt }] });
+
+    const result = await getAllPhotosForAlbum(albumId);
+
+    const [sql, params] = mockQuery.mock.calls[0];
+    expect(sql).toContain("ORDER BY date_trunc('milliseconds', pa.added_at) ASC, p.id ASC");
+    expect(params).toEqual([albumId]);
+    expect(result).toEqual([{ ...toPhoto(photoRow('photo-1')), addedAt }]);
   });
 });
 

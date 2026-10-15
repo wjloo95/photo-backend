@@ -10,14 +10,15 @@ import {
   rehydrateAlbumDates,
 } from '../db/queries/albums';
 import { getClientByUserId } from '../db/queries/clients';
-import { Album, AlbumType, Photo, UserRole } from '../types';
+import { Album, AlbumType, UserRole } from '../types';
 import { requireRole } from '../middleware/requireRole';
 import { AppError } from '../types/AppError';
 import {
   insertPhotosForAlbum,
   getPhotoById,
   getAllPhotosForAlbum,
-  rehydratePhotoDates,
+  rehydrateAlbumPhotoDates,
+  AlbumPhoto,
   getAlbumOwnersForPhoto,
   addPhotoToAlbum,
   removePhotoFromAlbum,
@@ -266,10 +267,10 @@ export const getAlbumPhotos: RequestHandler = async (req, res, next) => {
     // cache or DB, so a single cache.del('album:photos:{id}') on any photo
     // add/remove invalidates every page at once.
     const photosCacheKey = albumPhotosCacheKey(req.params.id);
-    let allPhotos = await cache.get<Photo[]>(photosCacheKey);
+    let allPhotos = await cache.get<AlbumPhoto[]>(photosCacheKey);
 
     if (allPhotos) {
-      allPhotos = allPhotos.map(rehydratePhotoDates);
+      allPhotos = allPhotos.map(rehydrateAlbumPhotoDates);
     } else {
       allPhotos = await getAllPhotosForAlbum(album.id);
       await cache.set(photosCacheKey, allPhotos, 300);

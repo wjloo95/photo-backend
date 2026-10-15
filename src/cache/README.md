@@ -70,7 +70,7 @@ The pattern is: after a destructive write in your route handler, call `cache.del
 Use consistent, namespaced keys to avoid collisions between different resource types:
 
 ```
-album:photos:{albumId}        → photo list for an album
+album:photos:v2:{albumId}     → photo list for an album (albumPhotosCacheKey)
 album:meta:{albumId}          → album metadata
 photographer:profile:{id}     → photographer profile
 conversations:{userId}        → conversation list for a user
@@ -78,5 +78,11 @@ conversations:{userId}        → conversation list for a user
 
 Define these as constants in your route files so they are easy to find and change.
 A key that is written or cleared from more than one file gets a builder in
-`keys.ts` instead (today: `albumPhotosCacheKey`, used by the album routes and
-the photo processor), so every caller spells it the same way.
+`keys.ts` instead (today: `albumPhotosCacheKey`), so every caller spells it
+the same way.
+
+A key whose cached value changes shape gets a new version segment rather than
+being reused. `album:photos:v2:` entries are ordered by `(added_at, id)` and
+carry each photo's `addedAt`, which cursor pagination depends on; a `v1` entry
+left in Redis by an older deploy has neither. Bumping the version means new
+code never reads an old entry, and the old entries simply expire.
