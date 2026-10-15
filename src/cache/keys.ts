@@ -7,15 +7,7 @@
  * stops matching.
  */
 
-/**
- * The full photo list for an album, as GET /albums/:id/photos caches it.
- *
- * The version segment changes whenever the cached value's shape does. v2
- * entries are ordered and carry addedAt; a v1 entry still in Redis has
- * neither, and cursor code reading it would page wrongly until its TTL ran
- * out. A new key just never sees the old entries, which then expire on their
- * own.
- */
+/** The full photo list for an album, as GET /albums/:id/photos caches it. */
 export function albumPhotosCacheKey(albumId: string): string {
-  return `album:photos:v2:${albumId}`;
+  return `album:photos:${albumId}`;
 }

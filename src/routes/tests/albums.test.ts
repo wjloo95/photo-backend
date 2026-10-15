@@ -481,7 +481,7 @@ describe('updateAlbumFromId', () => {
     expect(next).not.toHaveBeenCalled();
     // Invalidates the album's own metadata, not the (unrelated) photo list.
     expect(cacheDelMock).toHaveBeenCalledWith('album:meta:album-1');
-    expect(cacheDelMock).not.toHaveBeenCalledWith('album:photos:v2:album-1');
+    expect(cacheDelMock).not.toHaveBeenCalledWith('album:photos:album-1');
   });
 
   it('forwards errors from the query layer to next(err)', async () => {
@@ -537,7 +537,7 @@ describe('deleteAlbumFromId', () => {
     expect(res.json).not.toHaveBeenCalled();
     expect(next).not.toHaveBeenCalled();
     expect(cacheDelMock).toHaveBeenCalledWith('album:meta:album-1');
-    expect(cacheDelMock).not.toHaveBeenCalledWith('album:photos:v2:album-1');
+    expect(cacheDelMock).not.toHaveBeenCalledWith('album:photos:album-1');
   });
 
   it('forwards errors from the query layer to next(err)', async () => {
@@ -669,7 +669,7 @@ describe('createAlbumPhotosBatch', () => {
     expect(res.json).toHaveBeenCalledWith(createdPhotos);
     expect(next).not.toHaveBeenCalled();
     // New photos change album membership, not the album's own fields.
-    expect(cacheDelMock).toHaveBeenCalledWith('album:photos:v2:album-1');
+    expect(cacheDelMock).toHaveBeenCalledWith('album:photos:album-1');
     expect(cacheDelMock).not.toHaveBeenCalledWith('album:meta:album-1');
   });
 
@@ -824,7 +824,7 @@ describe('getAlbumPhotos', () => {
     expect(getAlbumByIdMock).toHaveBeenCalledWith('album-1');
     expect(cacheSetMock).toHaveBeenCalledWith('album:meta:album-1', shootAlbum, 900);
     expect(getAllPhotosForAlbumMock).toHaveBeenCalledWith('album-1');
-    expect(cacheSetMock).toHaveBeenCalledWith('album:photos:v2:album-1', albumPhotos, 300);
+    expect(cacheSetMock).toHaveBeenCalledWith('album:photos:album-1', albumPhotos, 300);
   });
 
   it('reuses a cached album instead of querying the DB again', async () => {
@@ -840,7 +840,7 @@ describe('getAlbumPhotos', () => {
 
   it('reuses a cached photo list instead of querying the DB again, rehydrating its dates', async () => {
     cacheGetMock.mockImplementation((key: string) =>
-      Promise.resolve(key === 'album:photos:v2:album-1' ? asCached(albumPhotos) : null),
+      Promise.resolve(key === 'album:photos:album-1' ? asCached(albumPhotos) : null),
     );
 
     const { body } = await request();
@@ -1028,7 +1028,7 @@ describe('getAlbumPhotos', () => {
   it('accepts a cursor issued on a cache miss on a cache-hit request', async () => {
     const { body: page1 } = await request({ limit: '3' });
     cacheGetMock.mockImplementation((key: string) =>
-      Promise.resolve(key === 'album:photos:v2:album-1' ? asCached(albumPhotos) : null),
+      Promise.resolve(key === 'album:photos:album-1' ? asCached(albumPhotos) : null),
     );
 
     const { body: page2 } = await request({ limit: '3', cursor: page1!.nextCursor });
@@ -1039,7 +1039,7 @@ describe('getAlbumPhotos', () => {
 
   it('accepts a cursor issued on a cache hit on a cache-miss request', async () => {
     cacheGetMock.mockImplementation((key: string) =>
-      Promise.resolve(key === 'album:photos:v2:album-1' ? asCached(albumPhotos) : null),
+      Promise.resolve(key === 'album:photos:album-1' ? asCached(albumPhotos) : null),
     );
     const { body: page1 } = await request({ limit: '3' });
     cacheGetMock.mockResolvedValue(null);
@@ -1181,7 +1181,7 @@ describe('deleteAlbumPhotosBatch', () => {
     expect(next).not.toHaveBeenCalled();
     // Removing photos changes album membership, not the album's own fields —
     // regression check for the album:meta:/album:photos: key mixup.
-    expect(cacheDelMock).toHaveBeenCalledWith('album:photos:v2:album-1');
+    expect(cacheDelMock).toHaveBeenCalledWith('album:photos:album-1');
     expect(cacheDelMock).not.toHaveBeenCalledWith('album:meta:album-1');
   });
 
@@ -1283,7 +1283,7 @@ describe('addAlbumPhoto', () => {
     expect(next).not.toHaveBeenCalled();
     // Linking a photo in changes album membership, not the album's own fields —
     // regression check for the album:meta:/album:photos: key mixup.
-    expect(cacheDelMock).toHaveBeenCalledWith('album:photos:v2:album-1');
+    expect(cacheDelMock).toHaveBeenCalledWith('album:photos:album-1');
     expect(cacheDelMock).not.toHaveBeenCalledWith('album:meta:album-1');
   });
 
@@ -1346,7 +1346,7 @@ describe('removeAlbumPhoto', () => {
     expect(next).not.toHaveBeenCalled();
     // Unlinking a photo changes album membership, not the album's own fields —
     // regression check for the album:meta:/album:photos: key mixup.
-    expect(cacheDelMock).toHaveBeenCalledWith('album:photos:v2:album-1');
+    expect(cacheDelMock).toHaveBeenCalledWith('album:photos:album-1');
     expect(cacheDelMock).not.toHaveBeenCalledWith('album:meta:album-1');
   });
 

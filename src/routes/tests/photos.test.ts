@@ -269,8 +269,8 @@ describe('deletePhotoFromId', () => {
     await deletePhotoFromId(req, res, next);
 
     expect(cacheDelMock).toHaveBeenCalledTimes(2);
-    expect(cacheDelMock).toHaveBeenCalledWith('album:photos:v2:album-1');
-    expect(cacheDelMock).toHaveBeenCalledWith('album:photos:v2:album-2');
+    expect(cacheDelMock).toHaveBeenCalledWith('album:photos:album-1');
+    expect(cacheDelMock).toHaveBeenCalledWith('album:photos:album-2');
     expect(deletePhotoByIdMock.mock.invocationCallOrder[0]).toBeLessThan(
       cacheDelMock.mock.invocationCallOrder[0],
     );

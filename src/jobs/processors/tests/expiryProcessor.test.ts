@@ -310,7 +310,7 @@ describe('processExpiryJob — delete-expired', () => {
     await processExpiryJob(ExpiryJobName.DeleteExpired);
 
     expect(cacheDelMock).toHaveBeenCalledWith('album:meta:album-1');
-    expect(cacheDelMock).toHaveBeenCalledWith('album:photos:v2:album-1');
+    expect(cacheDelMock).toHaveBeenCalledWith('album:photos:album-1');
     expect(deleteAlbumByIdMock.mock.invocationCallOrder[0]).toBeLessThan(
       cacheDelMock.mock.invocationCallOrder[0],
     );

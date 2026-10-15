@@ -150,7 +150,7 @@ describe("processPhotoBatch — clearing the album's photo-list cache", () => {
 
     await processPhotoBatch({ photoIds: ['photo-1'], albumId: 'album-1' });
 
-    expect(cacheDelMock).toHaveBeenCalledWith('album:photos:v2:album-1');
+    expect(cacheDelMock).toHaveBeenCalledWith('album:photos:album-1');
     expect(markPhotoReadyMock.mock.invocationCallOrder[0]).toBeLessThan(
       cacheDelMock.mock.invocationCallOrder[0],
     );
@@ -305,7 +305,7 @@ describe('failRemainingPhotos', () => {
     await failRemainingPhotos({ photoIds: ['photo-1', 'photo-2'], albumId: 'album-1' });
 
     expect(markPhotosFailedMock).toHaveBeenCalledWith(['photo-1', 'photo-2']);
-    expect(cacheDelMock).toHaveBeenCalledWith('album:photos:v2:album-1');
+    expect(cacheDelMock).toHaveBeenCalledWith('album:photos:album-1');
     expect(markPhotosFailedMock.mock.invocationCallOrder[0]).toBeLessThan(
       cacheDelMock.mock.invocationCallOrder[0],
     );
