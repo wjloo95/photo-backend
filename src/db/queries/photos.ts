@@ -142,6 +142,7 @@ export async function getAllPhotosForAlbum(albumId: string): Promise<AlbumPhoto[
 }
 
 export interface PhotoAlbumOwnership {
+  albumId: string;
   photographerId: string;
   clientId: string | null;
 }
@@ -150,16 +151,23 @@ export interface PhotoAlbumOwnership {
 // photographer/client — used to authorize both direct photo access
 // (GET/DELETE /photos/:id) and "add existing photo to another album"
 // (a photographer may only link in photos they already have album access
-// to, not an arbitrary photo id).
+// to, not an arbitrary photo id). albumId is there for DELETE /photos/:id,
+// which must clear each of those albums' cached photo lists — and must read
+// them before the delete, since the photo_albums rows cascade away with it.
 export async function getAlbumOwnersForPhoto(photoId: string): Promise<PhotoAlbumOwnership[]> {
-  const result = await pool.query<{ photographer_id: string; client_id: string | null }>(
-    `SELECT a.photographer_id, a.client_id
+  const result = await pool.query<{
+    album_id: string;
+    photographer_id: string;
+    client_id: string | null;
+  }>(
+    `SELECT a.id AS album_id, a.photographer_id, a.client_id
      FROM photo_albums pa
      JOIN albums a ON a.id = pa.album_id
      WHERE pa.photo_id = $1`,
     [photoId],
   );
   return result.rows.map((row) => ({
+    albumId: row.album_id,
     photographerId: row.photographer_id,
     clientId: row.client_id,
   }));

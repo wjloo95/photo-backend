@@ -288,11 +288,11 @@ describe('getAllPhotosForAlbum', () => {
 });
 
 describe('getAlbumOwnersForPhoto', () => {
-  it('maps photographer_id/client_id rows to camelCase for every album the photo belongs to', async () => {
+  it('maps album_id/photographer_id/client_id rows to camelCase for every album the photo belongs to', async () => {
     mockQuery.mockResolvedValue({
       rows: [
-        { photographer_id: 'photog-1', client_id: 'client-1' },
-        { photographer_id: 'photog-1', client_id: null },
+        { album_id: 'album-1', photographer_id: 'photog-1', client_id: 'client-1' },
+        { album_id: 'album-2', photographer_id: 'photog-1', client_id: null },
       ],
     });
 
@@ -300,8 +300,8 @@ describe('getAlbumOwnersForPhoto', () => {
 
     expect(mockQuery).toHaveBeenCalledWith(expect.stringContaining('photo_albums'), ['photo-1']);
     expect(result).toEqual([
-      { photographerId: 'photog-1', clientId: 'client-1' },
-      { photographerId: 'photog-1', clientId: null },
+      { albumId: 'album-1', photographerId: 'photog-1', clientId: 'client-1' },
+      { albumId: 'album-2', photographerId: 'photog-1', clientId: null },
     ]);
   });
 
