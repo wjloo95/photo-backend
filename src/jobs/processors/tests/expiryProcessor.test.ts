@@ -48,6 +48,11 @@ jest.mock('../../../email', () => ({
   emailSender: { send: jest.fn() },
 }));
 
+jest.mock('../../../cache', () => ({
+  __esModule: true,
+  default: { del: jest.fn() },
+}));
+
 // processEachSafely itself is NOT mocked — it's already covered by its own
 // test file, and using the real implementation here confirms expiryProcessor
 // actually composes correctly with it (isolation, aggregate throw, and the
@@ -67,6 +72,7 @@ import {
 } from '../../../db/queries/photos';
 import { v2 as cloudinary } from 'cloudinary';
 import { emailSender } from '../../../email';
+import cache from '../../../cache';
 import { processExpiryJob } from '../expiryProcessor';
 
 const deleteAlbumByIdMock = deleteAlbumById as jest.Mock;
@@ -78,6 +84,7 @@ const deletePhotoByIdMock = deletePhotoById as jest.Mock;
 const getAlbumOwnersForPhotoMock = getAlbumOwnersForPhoto as jest.Mock;
 const getAllPhotosForAlbumMock = getAllPhotosForAlbum as jest.Mock;
 const destroyMock = cloudinary.uploader.destroy as jest.Mock;
+const cacheDelMock = cache.del as jest.Mock;
 
 function album(overrides: Partial<Album> = {}): Album {
   return {
@@ -294,6 +301,50 @@ describe('processExpiryJob — delete-expired', () => {
     expect(destroyMock).toHaveBeenCalledWith('key-album-1');
     expect(destroyMock).toHaveBeenCalledWith('key-album-2');
   });
+
+  it("clears the deleted album's metadata and photo-list caches after deleting it", async () => {
+    getExpiredAlbumsMock.mockResolvedValue([album({ id: 'album-1' })]);
+    getAllPhotosForAlbumMock.mockResolvedValue([]);
+    deleteAlbumByIdMock.mockResolvedValue(undefined);
+
+    await processExpiryJob(ExpiryJobName.DeleteExpired);
+
+    expect(cacheDelMock).toHaveBeenCalledWith('album:meta:album-1');
+    expect(cacheDelMock).toHaveBeenCalledWith('album:photos:v2:album-1');
+    expect(deleteAlbumByIdMock.mock.invocationCallOrder[0]).toBeLessThan(
+      cacheDelMock.mock.invocationCallOrder[0],
+    );
+  });
+
+  it('clears no cache for an album it could not delete', async () => {
+    getExpiredAlbumsMock.mockResolvedValue([album({ id: 'album-1' })]);
+    getAllPhotosForAlbumMock.mockRejectedValue(new Error('DB connection lost'));
+
+    await expect(processExpiryJob(ExpiryJobName.DeleteExpired)).rejects.toThrow();
+
+    expect(cacheDelMock).not.toHaveBeenCalled();
+  });
+
+  it.each([[PhotoStatus.processing]])(
+    'deletes a never-uploaded (%s, empty base_path) photo and its album without calling Cloudinary',
+    async (status) => {
+      getExpiredAlbumsMock.mockResolvedValue([album({ id: 'album-1' })]);
+      getAllPhotosForAlbumMock.mockResolvedValue([
+        photo({ id: 'photo-1', basePath: '', status, width: null, height: null }),
+      ]);
+      getAlbumOwnersForPhotoMock.mockResolvedValue([
+        { albumId: 'album-1', photographerId: 'photog-1', clientId: 'client-1' },
+      ]);
+      deletePhotoByIdMock.mockResolvedValue(undefined);
+      deleteAlbumByIdMock.mockResolvedValue(undefined);
+
+      await processExpiryJob(ExpiryJobName.DeleteExpired);
+
+      expect(destroyMock).not.toHaveBeenCalled();
+      expect(deletePhotoByIdMock).toHaveBeenCalledWith('photo-1');
+      expect(deleteAlbumByIdMock).toHaveBeenCalledWith('album-1');
+    },
+  );
 
   it('does not delete the album when one of its photos fails to process', async () => {
     getExpiredAlbumsMock.mockResolvedValue([album({ id: 'album-1' })]);
