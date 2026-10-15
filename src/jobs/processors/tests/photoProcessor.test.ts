@@ -26,6 +26,11 @@ jest.mock('../../../config/env', () => ({
   },
 }));
 
+jest.mock('../../../cache', () => ({
+  __esModule: true,
+  default: { del: jest.fn() },
+}));
+
 const UPLOAD_TMP_DIR = '/tmp/sys-photo-uploads-test';
 jest.mock('../../../config/uploads', () => ({ UPLOAD_TMP_DIR: '/tmp/sys-photo-uploads-test' }));
 
@@ -35,12 +40,14 @@ import { processPhotoBatch } from '../photoProcessor';
 import { getPhotoById, markPhotoReady } from '../../../db/queries/photos';
 import { v2 as cloudinary } from 'cloudinary';
 import { unlink } from 'node:fs/promises';
+import cache from '../../../cache';
 
 const getPhotoByIdMock = getPhotoById as jest.Mock;
 const markPhotoReadyMock = markPhotoReady as jest.Mock;
 const cloudinaryConfigMock = cloudinary.config as jest.Mock;
 const uploadMock = cloudinary.uploader.upload as jest.Mock;
 const unlinkMock = unlink as jest.Mock;
+const cacheDelMock = cache.del as jest.Mock;
 
 function photo(overrides: Partial<Photo> = {}): Photo {
   return {
@@ -59,6 +66,8 @@ beforeEach(() => {
   uploadMock.mockReset();
   markPhotoReadyMock.mockReset();
   unlinkMock.mockReset();
+  cacheDelMock.mockReset();
+  cacheDelMock.mockResolvedValue(undefined);
   jest.spyOn(console, 'error').mockImplementation(() => undefined);
   // Deliberately not touching cloudinaryConfigMock — it's only ever called
   // once, at module import above, and clearing it here would make the
@@ -122,6 +131,63 @@ describe('processPhotoBatch — happy path', () => {
     await expect(
       processPhotoBatch({ photoIds: ['photo-1'], albumId: 'album-1' }),
     ).resolves.toBeUndefined();
+  });
+});
+
+describe("processPhotoBatch — clearing the album's photo-list cache", () => {
+  beforeEach(() => {
+    uploadMock.mockImplementation((_filePath: string, opts: { public_id: string }) =>
+      Promise.resolve({ public_id: opts.public_id, width: 1, height: 1 }),
+    );
+    markPhotoReadyMock.mockResolvedValue(undefined);
+    unlinkMock.mockResolvedValue(undefined);
+  });
+
+  it("clears the upload album's photo list after the photo is marked ready", async () => {
+    getPhotoByIdMock.mockResolvedValue(photo());
+
+    await processPhotoBatch({ photoIds: ['photo-1'], albumId: 'album-1' });
+
+    expect(cacheDelMock).toHaveBeenCalledWith('album:photos:v2:album-1');
+    expect(markPhotoReadyMock.mock.invocationCallOrder[0]).toBeLessThan(
+      cacheDelMock.mock.invocationCallOrder[0],
+    );
+  });
+
+  it('clears it once per photo, so the processing count drops as each one finishes', async () => {
+    getPhotoByIdMock.mockImplementation((id: string) => Promise.resolve(photo({ id })));
+
+    await processPhotoBatch({ photoIds: ['photo-1', 'photo-2', 'photo-3'], albumId: 'album-1' });
+
+    expect(cacheDelMock).toHaveBeenCalledTimes(3);
+  });
+
+  it('does not clear it for a photo that was already ready (skipped on a retry)', async () => {
+    getPhotoByIdMock.mockResolvedValue(photo({ status: PhotoStatus.ready }));
+
+    await processPhotoBatch({ photoIds: ['photo-1'], albumId: 'album-1' });
+
+    expect(cacheDelMock).not.toHaveBeenCalled();
+  });
+
+  it('does not clear it when marking the photo ready fails', async () => {
+    getPhotoByIdMock.mockResolvedValue(photo());
+    markPhotoReadyMock.mockRejectedValue(new Error('connection lost'));
+
+    await expect(
+      processPhotoBatch({ photoIds: ['photo-1'], albumId: 'album-1' }),
+    ).rejects.toThrow();
+    expect(cacheDelMock).not.toHaveBeenCalled();
+  });
+
+  it('removes the temp file before clearing the cache, so a Redis failure cannot leak it', async () => {
+    getPhotoByIdMock.mockResolvedValue(photo());
+    cacheDelMock.mockRejectedValue(new Error('Redis down'));
+
+    await expect(
+      processPhotoBatch({ photoIds: ['photo-1'], albumId: 'album-1' }),
+    ).rejects.toThrow('1/1 photos failed to process');
+    expect(unlinkMock).toHaveBeenCalledWith(path.join(UPLOAD_TMP_DIR, 'photo-1'));
   });
 });
 
