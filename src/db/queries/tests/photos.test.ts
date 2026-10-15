@@ -16,11 +16,13 @@ import {
   PhotoRow,
   getPhotoById,
   getPhotosForAlbum,
+  getAllPhotosForAlbum,
   getAlbumOwnersForPhoto,
   addPhotoToAlbum,
   removePhotoFromAlbum,
   deletePhotosFromAlbum,
   deletePhotoById,
+  markPhotosFailed,
 } from '../photos';
 import { PhotoStatus } from '../../../types';
 import { pool } from '../../../config/database';
@@ -272,12 +274,26 @@ describe('getPhotosForAlbum', () => {
   });
 });
 
+describe('getAllPhotosForAlbum', () => {
+  it('orders by added_at (to the millisecond) then id, and carries added_at as addedAt', async () => {
+    const addedAt = new Date('2026-08-28T00:00:00Z');
+    mockQuery.mockResolvedValue({ rows: [{ ...photoRow('photo-1'), added_at: addedAt }] });
+
+    const result = await getAllPhotosForAlbum(albumId);
+
+    const [sql, params] = mockQuery.mock.calls[0];
+    expect(sql).toContain("ORDER BY date_trunc('milliseconds', pa.added_at) ASC, p.id ASC");
+    expect(params).toEqual([albumId]);
+    expect(result).toEqual([{ ...toPhoto(photoRow('photo-1')), addedAt }]);
+  });
+});
+
 describe('getAlbumOwnersForPhoto', () => {
-  it('maps photographer_id/client_id rows to camelCase for every album the photo belongs to', async () => {
+  it('maps album_id/photographer_id/client_id rows to camelCase for every album the photo belongs to', async () => {
     mockQuery.mockResolvedValue({
       rows: [
-        { photographer_id: 'photog-1', client_id: 'client-1' },
-        { photographer_id: 'photog-1', client_id: null },
+        { album_id: 'album-1', photographer_id: 'photog-1', client_id: 'client-1' },
+        { album_id: 'album-2', photographer_id: 'photog-1', client_id: null },
       ],
     });
 
@@ -285,8 +301,8 @@ describe('getAlbumOwnersForPhoto', () => {
 
     expect(mockQuery).toHaveBeenCalledWith(expect.stringContaining('photo_albums'), ['photo-1']);
     expect(result).toEqual([
-      { photographerId: 'photog-1', clientId: 'client-1' },
-      { photographerId: 'photog-1', clientId: null },
+      { albumId: 'album-1', photographerId: 'photog-1', clientId: 'client-1' },
+      { albumId: 'album-2', photographerId: 'photog-1', clientId: null },
     ]);
   });
 
@@ -358,5 +374,20 @@ describe('deletePhotoById', () => {
     expect(mockQuery).toHaveBeenCalledWith(expect.stringContaining('DELETE FROM photos'), [
       'photo-1',
     ]);
+  });
+});
+
+describe('markPhotosFailed', () => {
+  it('marks only the listed photos that are still processing as failed', async () => {
+    mockQuery.mockResolvedValue({ rowCount: 1 });
+
+    await markPhotosFailed(['photo-1', 'photo-2']);
+
+    const [sql, params] = mockQuery.mock.calls[0];
+    expect(sql).toContain("SET status = 'failed'");
+    expect(sql).toContain('id = ANY($1::uuid[])');
+    // The guard that keeps an already-ready photo from being overwritten.
+    expect(sql).toContain("AND status = 'processing'");
+    expect(params).toEqual([['photo-1', 'photo-2']]);
   });
 });

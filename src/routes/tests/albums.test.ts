@@ -30,7 +30,11 @@ jest.mock('../../db/queries/photos', () => ({
   getPhotoById: jest.fn(),
   getAllPhotosForAlbum: jest.fn(),
   // Real implementation, not a stub — same reasoning as rehydrateAlbumDates.
-  rehydratePhotoDates: (photo: Photo) => ({ ...photo, uploadedAt: new Date(photo.uploadedAt) }),
+  rehydrateAlbumPhotoDates: (photo: AlbumPhoto) => ({
+    ...photo,
+    uploadedAt: new Date(photo.uploadedAt),
+    addedAt: new Date(photo.addedAt),
+  }),
   getAlbumOwnersForPhoto: jest.fn(),
   addPhotoToAlbum: jest.fn(),
   removePhotoFromAlbum: jest.fn(),
@@ -78,6 +82,7 @@ import {
 import cache from '../../cache';
 import { photoQueue } from '../../jobs/queues/photoQueue';
 import { rename } from 'node:fs/promises';
+import type { AlbumPhoto } from '../../db/queries/photos';
 
 const insertAlbumMock = insertAlbum as jest.Mock;
 const getAlbumByIdMock = getAlbumById as jest.Mock;
@@ -720,164 +725,381 @@ describe('createAlbumPhotosBatch', () => {
 });
 
 describe('getAlbumPhotos', () => {
-  it('forwards a 404 AppError when no album matches the id', async () => {
-    getAlbumByIdMock.mockResolvedValue(null);
-    const req = makeReq({ params: { id: 'missing-id' }, user: photographer });
+  // An album's photos in the order getAllPhotosForAlbum returns them:
+  // (addedAt, id). Photos 1–3 share an addedAt (one batch upload), so the id
+  // tie-break is exercised; the last two are still processing.
+  const at = (minute: number): Date => new Date(Date.UTC(2026, 0, 2, 0, minute));
+  function albumPhoto(n: number, addedAt: Date, status = PhotoStatus.ready): AlbumPhoto {
+    return {
+      id: `photo-${String(n).padStart(2, '0')}`,
+      basePath: status === PhotoStatus.ready ? `photo-${n}` : '',
+      status,
+      width: status === PhotoStatus.ready ? 800 : null,
+      height: status === PhotoStatus.ready ? 600 : null,
+      uploadedAt: new Date('2026-01-01T00:00:00Z'),
+      addedAt,
+    };
+  }
+  const albumPhotos: AlbumPhoto[] = [
+    albumPhoto(1, at(0)),
+    albumPhoto(2, at(0)),
+    albumPhoto(3, at(0)),
+    albumPhoto(4, at(1)),
+    albumPhoto(5, at(2)),
+    albumPhoto(6, at(3), PhotoStatus.processing),
+    albumPhoto(7, at(3), PhotoStatus.processing),
+  ];
+  const ids = (photos: { id: string }[]): string[] => photos.map((photo) => photo.id);
+  // What a cache hit hands the handler: the list after a JSON round trip.
+  const asCached = (photos: AlbumPhoto[]): unknown => JSON.parse(JSON.stringify(photos));
+
+  interface PhotosBody {
+    data: Photo[];
+    nextCursor: string | null;
+    total: number;
+    processingCount: number;
+  }
+
+  async function request(
+    query: object = {},
+    user: User = photographer,
+  ): Promise<{ res: Response; next: NextFunction; body: PhotosBody | undefined }> {
+    const req = makeReq({ params: { id: 'album-1' }, user, query });
     const res = makeRes();
     const next = jest.fn() as NextFunction;
-
     await getAlbumPhotos(req, res, next);
+    const body = (res.json as jest.Mock).mock.calls[0]?.[0] as PhotosBody | undefined;
+    return { res, next, body };
+  }
+
+  // Follows nextCursor from the first page to null, returning every page.
+  async function walk(query: object = {}): Promise<PhotosBody[]> {
+    const pages: PhotosBody[] = [];
+    let cursor: string | null | undefined;
+    do {
+      const { body } = await request(cursor ? { ...query, cursor } : query);
+      pages.push(body!);
+      cursor = body!.nextCursor;
+    } while (cursor && pages.length < 50);
+    return pages;
+  }
+
+  beforeEach(() => {
+    getAlbumByIdMock.mockResolvedValue(shootAlbum);
+    getAllPhotosForAlbumMock.mockResolvedValue(albumPhotos);
+  });
+
+  it('forwards a 404 AppError when no album matches the id', async () => {
+    getAlbumByIdMock.mockResolvedValue(null);
+
+    const { next } = await request();
 
     expect(next).toHaveBeenCalledWith(expect.objectContaining({ status: 404 }));
     expect(getAllPhotosForAlbumMock).not.toHaveBeenCalled();
   });
 
   it('forwards a 403 AppError when the caller is neither the owning photographer nor the linked client', async () => {
-    getAlbumByIdMock.mockResolvedValue(shootAlbum);
-    const req = makeReq({ params: { id: 'album-1' }, user: someoneElsePhotographer });
-    const res = makeRes();
-    const next = jest.fn() as NextFunction;
-
-    await getAlbumPhotos(req, res, next);
+    const { next } = await request({}, someoneElsePhotographer);
 
     expect(next).toHaveBeenCalledWith(expect.objectContaining({ status: 403 }));
     expect(getAllPhotosForAlbumMock).not.toHaveBeenCalled();
   });
 
-  it('on a full cache miss, fetches the album and the full photo list, populates both caches, and responds', async () => {
-    getAlbumByIdMock.mockResolvedValue(shootAlbum);
-    getAllPhotosForAlbumMock.mockResolvedValue(createdPhotos);
+  it('forwards a 403 AppError for a client who is not the linked client', async () => {
+    const { next } = await request({}, someoneElseClient);
 
-    const req = makeReq({ params: { id: 'album-1' }, user: photographer });
-    const res = makeRes();
-    const next = jest.fn() as NextFunction;
+    expect(next).toHaveBeenCalledWith(expect.objectContaining({ status: 403 }));
+  });
 
-    await getAlbumPhotos(req, res, next);
+  it('responds with photos for the linked client', async () => {
+    const { body, next } = await request({}, client);
+
+    expect(body!.data).toHaveLength(7);
+    expect(next).not.toHaveBeenCalled();
+  });
+
+  it('on a full cache miss, fetches the album and the full photo list and populates both caches', async () => {
+    await request();
 
     expect(getAlbumByIdMock).toHaveBeenCalledWith('album-1');
     expect(cacheSetMock).toHaveBeenCalledWith('album:meta:album-1', shootAlbum, 900);
     expect(getAllPhotosForAlbumMock).toHaveBeenCalledWith('album-1');
-    expect(cacheSetMock).toHaveBeenCalledWith('album:photos:album-1', createdPhotos, 300);
-    expect(res.json).toHaveBeenCalledWith(createdPhotos);
-    expect(next).not.toHaveBeenCalled();
+    expect(cacheSetMock).toHaveBeenCalledWith('album:photos:album-1', albumPhotos, 300);
   });
 
   it('reuses a cached album instead of querying the DB again', async () => {
     cacheGetMock.mockImplementation((key: string) =>
       Promise.resolve(key === 'album:meta:album-1' ? shootAlbum : null),
     );
-    getAllPhotosForAlbumMock.mockResolvedValue(createdPhotos);
 
-    const req = makeReq({ params: { id: 'album-1' }, user: photographer });
-    const res = makeRes();
-    const next = jest.fn() as NextFunction;
-
-    await getAlbumPhotos(req, res, next);
+    const { body } = await request();
 
     expect(getAlbumByIdMock).not.toHaveBeenCalled();
-    expect(res.json).toHaveBeenCalledWith(createdPhotos);
+    expect(body!.total).toBe(7);
   });
 
-  it('reuses a cached photo list instead of querying the DB again', async () => {
+  it('reuses a cached photo list instead of querying the DB again, rehydrating its dates', async () => {
     cacheGetMock.mockImplementation((key: string) =>
-      Promise.resolve(key === 'album:photos:album-1' ? createdPhotos : null),
+      Promise.resolve(key === 'album:photos:album-1' ? asCached(albumPhotos) : null),
     );
-    getAlbumByIdMock.mockResolvedValue(shootAlbum);
 
-    const req = makeReq({ params: { id: 'album-1' }, user: photographer });
-    const res = makeRes();
-    const next = jest.fn() as NextFunction;
-
-    await getAlbumPhotos(req, res, next);
+    const { body } = await request();
 
     expect(getAllPhotosForAlbumMock).not.toHaveBeenCalled();
-    expect(res.json).toHaveBeenCalledWith(createdPhotos);
+    expect(body!.data[0].uploadedAt).toEqual(new Date('2026-01-01T00:00:00Z'));
   });
 
-  it('responds with photos for the linked client', async () => {
-    getAlbumByIdMock.mockResolvedValue(shootAlbum);
-    getAllPhotosForAlbumMock.mockResolvedValue(createdPhotos);
+  it('responds with the { data, nextCursor, total, processingCount } envelope, without the internal addedAt', async () => {
+    const { body } = await request({ limit: '2' });
 
-    const req = makeReq({ params: { id: 'album-1' }, user: client });
-    const res = makeRes();
-    const next = jest.fn() as NextFunction;
-
-    await getAlbumPhotos(req, res, next);
-
-    expect(res.json).toHaveBeenCalledWith(createdPhotos);
-    expect(next).not.toHaveBeenCalled();
-  });
-
-  it('slices the full cached/fetched list by page and limit in application code, rather than querying per page', async () => {
-    const manyPhotos: Photo[] = Array.from({ length: 5 }, (_, i) => ({
-      ...createdPhotos[0],
-      id: `photo-${i + 1}`,
-    }));
-    getAlbumByIdMock.mockResolvedValue(shootAlbum);
-    getAllPhotosForAlbumMock.mockResolvedValue(manyPhotos);
-
-    const req = makeReq({
-      params: { id: 'album-1' },
-      user: photographer,
-      query: { page: '2', limit: '2' },
+    expect(Object.keys(body!).sort()).toEqual(['data', 'nextCursor', 'processingCount', 'total']);
+    expect(body!.data[0]).toEqual({
+      id: 'photo-01',
+      basePath: 'photo-1',
+      status: PhotoStatus.ready,
+      width: 800,
+      height: 600,
+      uploadedAt: new Date('2026-01-01T00:00:00Z'),
     });
-    const res = makeRes();
-    const next = jest.fn() as NextFunction;
+    expect(typeof body!.nextCursor).toBe('string');
+  });
 
-    await getAlbumPhotos(req, res, next);
+  it('counts every photo in total without a filter, and the processing ones in processingCount', async () => {
+    const { body } = await request();
 
-    // page 2, limit 2 => offset 2 => items at index 2 and 3
-    expect(res.json).toHaveBeenCalledWith([manyPhotos[2], manyPhotos[3]]);
-    // Fetched once regardless of page — not once per page.
+    expect(body!.total).toBe(7);
+    expect(body!.processingCount).toBe(2);
+  });
+
+  it('with ?status=ready, leaves processing photos out of data and total but still reports processingCount', async () => {
+    const { body } = await request({ status: 'ready' });
+
+    expect(ids(body!.data)).toEqual(['photo-01', 'photo-02', 'photo-03', 'photo-04', 'photo-05']);
+    expect(body!.total).toBe(5);
+    expect(body!.processingCount).toBe(2);
+  });
+
+  it('reports processingCount 0 when nothing is processing', async () => {
+    getAllPhotosForAlbumMock.mockResolvedValue(albumPhotos.slice(0, 5));
+
+    const { body } = await request();
+
+    expect(body!.processingCount).toBe(0);
+  });
+
+  describe('with a failed photo', () => {
+    // photo-07 used to be processing; its upload job then failed for good.
+    beforeEach(() => {
+      getAllPhotosForAlbumMock.mockResolvedValue([
+        ...albumPhotos.slice(0, 6),
+        albumPhoto(7, at(3), PhotoStatus.failed),
+      ]);
+    });
+
+    it('drops it from processingCount, which counts processing photos only', async () => {
+      const { body } = await request();
+
+      expect(body!.processingCount).toBe(1);
+    });
+
+    it('leaves it out of ?status=ready', async () => {
+      const { body } = await request({ status: 'ready' });
+
+      expect(ids(body!.data)).not.toContain('photo-07');
+      expect(body!.total).toBe(5);
+    });
+
+    it('includes it, with empty dimensions, in the unfiltered (studio) list', async () => {
+      const { body } = await request();
+
+      expect(body!.total).toBe(7);
+      expect(body!.data[6]).toMatchObject({
+        id: 'photo-07',
+        status: PhotoStatus.failed,
+        basePath: '',
+        width: null,
+        height: null,
+      });
+    });
+  });
+
+  it.each([['processing'], ['READY'], ['bogus']])(
+    'treats an unknown status (%s) as absent',
+    async (status) => {
+      const { body } = await request({ status });
+
+      expect(body!.total).toBe(7);
+    },
+  );
+
+  it('treats a repeated status param as absent', async () => {
+    const { body } = await request({ status: ['ready', 'ready'] });
+
+    expect(body!.total).toBe(7);
+  });
+
+  it('walking every cursor returns each photo exactly once, in (addedAt, id) order', async () => {
+    const pages = await walk({ limit: '2' });
+
+    expect(pages).toHaveLength(4);
+    expect(ids(pages.flatMap((page) => page.data))).toEqual(ids(albumPhotos));
+    expect(pages[pages.length - 1].nextCursor).toBeNull();
+    // Fetched from the DB on every request here (the cache mock never hits),
+    // but always the full list — never a per-page query.
+    expect(getAllPhotosForAlbumMock).toHaveBeenCalledTimes(4);
+  });
+
+  it('walking every cursor with ?status=ready returns each ready photo exactly once, in order', async () => {
+    const pages = await walk({ limit: '2', status: 'ready' });
+
+    expect(ids(pages.flatMap((page) => page.data))).toEqual([
+      'photo-01',
+      'photo-02',
+      'photo-03',
+      'photo-04',
+      'photo-05',
+    ]);
+    expect(pages.every((page) => page.total === 5 && page.processingCount === 2)).toBe(true);
+  });
+
+  it('pages photos that share an addedAt in id order, with none duplicated or lost across a page boundary', async () => {
+    // The page boundary falls between photo-02 and photo-03, which share
+    // at(0) with photo-01, so only the id tie-break places photo-03.
+    const pages = await walk({ limit: '2' });
+
+    expect(ids(pages[0].data)).toEqual(['photo-01', 'photo-02']);
+    expect(ids(pages[1].data)).toEqual(['photo-03', 'photo-04']);
+  });
+
+  it('returns nextCursor null when the page reaches exactly the last photo', async () => {
+    const { body } = await request({ limit: '7' });
+
+    expect(body!.data).toHaveLength(7);
+    expect(body!.nextCursor).toBeNull();
+  });
+
+  it('responds with an empty first page for an album with no photos', async () => {
+    getAllPhotosForAlbumMock.mockResolvedValue([]);
+
+    const { body } = await request();
+
+    expect(body).toEqual({ data: [], nextCursor: null, total: 0, processingCount: 0 });
+  });
+
+  it('does not skip a photo when one is removed from inside page 1 before page 2 is fetched', async () => {
+    const { body: page1 } = await request({ limit: '3' });
+    // photo-02 is removed from the album between the two requests.
+    getAllPhotosForAlbumMock.mockResolvedValue(albumPhotos.filter((p) => p.id !== 'photo-02'));
+
+    const { body: page2 } = await request({ limit: '3', cursor: page1!.nextCursor });
+
+    expect(ids(page1!.data)).toEqual(['photo-01', 'photo-02', 'photo-03']);
+    expect(ids(page2!.data)).toEqual(['photo-04', 'photo-05', 'photo-06']);
+  });
+
+  it("still returns the photos after a cursor's position when the cursor's own photo was removed", async () => {
+    const { body: page1 } = await request({ limit: '3' });
+    // photo-03 was the last photo on page 1, the one the cursor encodes.
+    getAllPhotosForAlbumMock.mockResolvedValue(albumPhotos.filter((p) => p.id !== 'photo-03'));
+
+    const { body: page2 } = await request({ limit: '3', cursor: page1!.nextCursor });
+
+    expect(ids(page2!.data)).toEqual(['photo-04', 'photo-05', 'photo-06']);
+  });
+
+  it('includes a photo added to the album after the cursor was issued, at the end', async () => {
+    const { body: page1 } = await request({ limit: '5' });
+    getAllPhotosForAlbumMock.mockResolvedValue([...albumPhotos, albumPhoto(8, at(4))]);
+
+    const { body: page2 } = await request({ limit: '5', cursor: page1!.nextCursor });
+
+    expect(ids(page2!.data)).toEqual(['photo-06', 'photo-07', 'photo-08']);
+  });
+
+  it('returns an empty last page when nothing sorts after the cursor any more', async () => {
+    const { body: page1 } = await request({ limit: '5' });
+    getAllPhotosForAlbumMock.mockResolvedValue(albumPhotos.slice(0, 5));
+
+    const { body: page2 } = await request({ limit: '5', cursor: page1!.nextCursor });
+
+    expect(page2).toEqual({ data: [], nextCursor: null, total: 5, processingCount: 0 });
+  });
+
+  it('accepts a cursor issued on a cache miss on a cache-hit request', async () => {
+    const { body: page1 } = await request({ limit: '3' });
+    cacheGetMock.mockImplementation((key: string) =>
+      Promise.resolve(key === 'album:photos:album-1' ? asCached(albumPhotos) : null),
+    );
+
+    const { body: page2 } = await request({ limit: '3', cursor: page1!.nextCursor });
+
     expect(getAllPhotosForAlbumMock).toHaveBeenCalledTimes(1);
+    expect(ids(page2!.data)).toEqual(['photo-04', 'photo-05', 'photo-06']);
+  });
+
+  it('accepts a cursor issued on a cache hit on a cache-miss request', async () => {
+    cacheGetMock.mockImplementation((key: string) =>
+      Promise.resolve(key === 'album:photos:album-1' ? asCached(albumPhotos) : null),
+    );
+    const { body: page1 } = await request({ limit: '3' });
+    cacheGetMock.mockResolvedValue(null);
+
+    const { body: page2 } = await request({ limit: '3', cursor: page1!.nextCursor });
+
+    expect(getAllPhotosForAlbumMock).toHaveBeenCalledTimes(1);
+    expect(ids(page2!.data)).toEqual(['photo-04', 'photo-05', 'photo-06']);
+  });
+
+  const encode = (value: unknown): string =>
+    Buffer.from(JSON.stringify(value)).toString('base64url');
+
+  it.each([
+    ['not base64 JSON', 'not-a-cursor'],
+    ['empty', ''],
+    ['the wrong shape', encode({ at: '2026-01-02T00:00:00.000Z', id: 'photo-01' })],
+    ['a missing id', encode(['2026-01-02T00:00:00.000Z', ''])],
+    ['an invalid date', encode(['not-a-date', 'photo-01'])],
+    ['a non-ISO date', encode(['2026-01-02', 'photo-01'])],
+    ['a repeated param', ['a', 'b']],
+  ])('responds 400 for a malformed cursor (%s)', async (_label, cursor) => {
+    const { next, res } = await request({ cursor });
+
+    expect(next).toHaveBeenCalledWith(
+      expect.objectContaining({ status: 400, message: 'Invalid cursor' }),
+    );
+    expect(res.json).not.toHaveBeenCalled();
+    expect(getAllPhotosForAlbumMock).not.toHaveBeenCalled();
   });
 
   it('caps limit at 100 even when a larger value is requested', async () => {
-    getAlbumByIdMock.mockResolvedValue(shootAlbum);
-    getAllPhotosForAlbumMock.mockResolvedValue(createdPhotos);
+    getAllPhotosForAlbumMock.mockResolvedValue(
+      Array.from({ length: 150 }, (_, i) => albumPhoto(i + 1, at(i))),
+    );
 
-    const req = makeReq({
-      params: { id: 'album-1' },
-      user: photographer,
-      query: { limit: '10000' },
-    });
-    const res = makeRes();
-    const next = jest.fn() as NextFunction;
+    const { body } = await request({ limit: '10000' });
 
-    await getAlbumPhotos(req, res, next);
-
-    // Only 2 photos exist in the fixture, so a capped limit of 100 still
-    // returns both — the cap itself is exercised by not throwing/truncating
-    // unexpectedly for an oversized requested limit.
-    expect(res.json).toHaveBeenCalledWith(createdPhotos);
+    expect(body!.data).toHaveLength(100);
+    expect(body!.nextCursor).not.toBeNull();
   });
 
   it.each([['0'], ['-1'], ['abc'], ['1.5']])(
-    'falls back to page 1 for an invalid page value (%s)',
-    async (page) => {
-      getAlbumByIdMock.mockResolvedValue(shootAlbum);
-      getAllPhotosForAlbumMock.mockResolvedValue(createdPhotos);
+    'falls back to a limit of 20 for an invalid limit value (%s)',
+    async (limit) => {
+      getAllPhotosForAlbumMock.mockResolvedValue(
+        Array.from({ length: 30 }, (_, i) => albumPhoto(i + 1, at(i))),
+      );
 
-      const req = makeReq({ params: { id: 'album-1' }, user: photographer, query: { page } });
-      const res = makeRes();
-      const next = jest.fn() as NextFunction;
+      const { body } = await request({ limit });
 
-      await getAlbumPhotos(req, res, next);
-
-      expect(res.json).toHaveBeenCalledWith(createdPhotos);
+      expect(body!.data).toHaveLength(20);
     },
   );
 
   it('forwards errors from the query layer to next(err)', async () => {
     const dbError = new Error('connection lost');
-    getAlbumByIdMock.mockResolvedValue(shootAlbum);
     getAllPhotosForAlbumMock.mockRejectedValue(dbError);
 
-    const req = makeReq({ params: { id: 'album-1' }, user: photographer });
-    const res = makeRes();
-    const next = jest.fn() as NextFunction;
-
-    await getAlbumPhotos(req, res, next);
+    const { next } = await request();
 
     expect(next).toHaveBeenCalledWith(dbError);
   });

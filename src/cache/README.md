@@ -70,10 +70,13 @@ The pattern is: after a destructive write in your route handler, call `cache.del
 Use consistent, namespaced keys to avoid collisions between different resource types:
 
 ```
-album:photos:{albumId}        → photo list for an album
+album:photos:{albumId}        → photo list for an album (albumPhotosCacheKey)
 album:meta:{albumId}          → album metadata
 photographer:profile:{id}     → photographer profile
 conversations:{userId}        → conversation list for a user
 ```
 
 Define these as constants in your route files so they are easy to find and change.
+A key that is written or cleared from more than one file gets a builder in
+`keys.ts` instead (today: `albumPhotosCacheKey`), so every caller spells it
+the same way.

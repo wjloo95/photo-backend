@@ -16,14 +16,16 @@ Local environment setup before first run:
 # host port 5433, not 5432 — leaves a locally installed Postgres alone
 docker run --name sys-photo-db -e POSTGRES_PASSWORD=postgres -p 5433:5432 -d postgres
 docker exec -it sys-photo-db psql -U postgres -c "CREATE DATABASE sys_photo;"
+docker run --name sys-photo-redis -p 6379:6379 -d redis   # cache + BullMQ queues
 cp .env.example .env   # then fill in DATABASE_URL and REDIS_URL at minimum
 npm run migrate
 npm run dev
 ```
 
-The matching `DATABASE_URL` is `postgres://postgres:postgres@localhost:5433/sys_photo`.
-If the container already exists but is stopped, `docker start sys-photo-db` is
-enough — no need to recreate it.
+The matching `DATABASE_URL` is `postgres://postgres:postgres@localhost:5433/sys_photo`,
+and `REDIS_URL` is `redis://localhost:6379`. If the containers already exist but
+are stopped, `docker start sys-photo-db sys-photo-redis` is enough — no need to
+recreate them.
 
 ## Architecture
 

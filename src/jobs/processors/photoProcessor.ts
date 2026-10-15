@@ -5,9 +5,11 @@
  * that routes/albums.ts's createAlbumPhotosBatch deferred by responding 202
  * immediately. Called from worker.ts once a job arrives.
  */
+import cache from '../../cache';
+import { albumPhotosCacheKey } from '../../cache/keys';
 import { env } from '../../config/env';
 import { UPLOAD_TMP_DIR } from '../../config/uploads';
-import { getPhotoById, markPhotoReady } from '../../db/queries/photos';
+import { getPhotoById, markPhotoReady, markPhotosFailed } from '../../db/queries/photos';
 import { PhotoStatus } from '../../types';
 import { ProcessBatchJobData } from '../queues/photoQueue';
 import { processEachSafely } from './processEachSafely';
@@ -31,10 +33,20 @@ import path from 'node:path';
 // but the whole job still fails and retries if anything did) is handled by
 // processEachSafely, shared with expiryProcessor.ts.
 //
-// job.data.albumId isn't needed for any of this — the photo was already
-// linked to its album via photo_albums back in insertPhotosForAlbum. It's
-// on the job data in case a future processor step needs it (e.g.
-// invalidating a cache entry keyed by album id — see Phase 6).
+// job.data.albumId is used for one thing: clearing that album's cached photo
+// list once a photo is ready, so the next GET /albums/:id/photos shows it as
+// ready instead of serving the stale 'processing' copy for up to the 300s
+// TTL. It's cleared per photo, not once per batch, so a client's "N more on
+// the way" count ticks down as photos finish rather than jumping at the end
+// of a large upload. The clear comes after the temp file is unlinked: if
+// Redis fails there, the worst case is a list that's up to 5 minutes stale.
+// Clearing before the unlink would turn the same failure into a leaked temp
+// file, since the retry skips the now-ready photo and never reaches it.
+//
+// Known gap: only the upload album is cleared. If the photographer added a
+// still-processing photo to a second album (addAlbumPhoto doesn't check
+// status), that album's cached list stays stale until its TTL expires.
+// Accepted as rare; closing it would cost a photo_albums lookup per photo.
 cloudinary.config({
   cloud_name: env.CLOUDINARY_CLOUD_NAME,
   api_key: env.CLOUDINARY_API_KEY,
@@ -60,7 +72,23 @@ export async function processPhotoBatch(data: ProcessBatchJobData): Promise<void
       await markPhotoReady(photoId, { basePath: public_id, width, height });
 
       await fs.unlink(path.join(UPLOAD_TMP_DIR, photoId));
+      await cache.del(albumPhotosCacheKey(data.albumId));
     },
     'photos',
   );
+}
+
+/**
+ * Called by worker.ts once a ProcessBatch job has failed its final attempt:
+ * every photo in the batch still processing becomes 'failed', and the album's
+ * photo list is cleared so processingCount drops right away instead of
+ * promising "more on the way" indefinitely.
+ *
+ * Failed photos' staged files stay in UPLOAD_TMP_DIR on purpose: Phase 7's
+ * manual retry will need them. Until that exists nothing removes them, so
+ * they accumulate there, one per failed photo.
+ */
+export async function failRemainingPhotos(data: ProcessBatchJobData): Promise<void> {
+  await markPhotosFailed(data.photoIds);
+  await cache.del(albumPhotosCacheKey(data.albumId));
 }

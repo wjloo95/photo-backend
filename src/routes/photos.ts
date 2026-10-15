@@ -1,6 +1,8 @@
 import { Router, RequestHandler } from 'express';
 import { getPhotoById, getAlbumOwnersForPhoto, deletePhotoById } from '../db/queries/photos';
 import { UserRole } from '../types';
+import cache from '../cache';
+import { albumPhotosCacheKey } from '../cache/keys';
 import { requireRole } from '../middleware/requireRole';
 import { AppError } from '../types/AppError';
 
@@ -40,7 +42,13 @@ export const getPhotoFromId: RequestHandler = async (req, res, next) => {
 // album the photo currently belongs to. Permanently removes the photo from
 // the system (not just from one album) — photo_albums rows and any
 // thumbnail_photo_id reference are cleaned up by the DB via ON DELETE
-// CASCADE/SET NULL (migration 006), so no extra cleanup is needed here.
+// CASCADE/SET NULL (migration 006).
+//
+// The cache is not: every album that contained the photo keeps listing it in
+// its cached photo list (with a destroyed image, a wrong total and a cursor
+// position that no longer exists) until that list is cleared. The album ids
+// come from the owners lookup the auth check already made, which ran before
+// the delete cascaded the photo_albums rows away.
 export const deletePhotoFromId: RequestHandler = async (req, res, next) => {
   try {
     const photo = await getPhotoById(req.params.id);
@@ -57,6 +65,8 @@ export const deletePhotoFromId: RequestHandler = async (req, res, next) => {
     }
 
     await deletePhotoById(photo.id);
+
+    await Promise.all(owners.map((owner) => cache.del(albumPhotosCacheKey(owner.albumId))));
 
     res.status(204).send();
   } catch (err) {

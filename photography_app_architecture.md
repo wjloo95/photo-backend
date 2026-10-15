@@ -127,7 +127,7 @@ PostgreSQL via AWS RDS. All entities use UUID primary keys. Foreign keys enforce
 |---|---|---|
 | id | uuid | PK |
 | base_path | string | Cloudinary key |
-| status | enum('processing', 'ready') | |
+| status | enum('processing', 'ready', 'failed') | 'failed' once the upload job's final retry fails (migration 021) |
 | width | integer | nullable — set by the processor once Cloudinary reports it |
 | height | integer | nullable — set by the processor once Cloudinary reports it |
 | uploaded_at | timestamp | |
@@ -292,7 +292,7 @@ photographerId}`, and nothing needs an endpoint to read it.
 | GET | /albums/:id | Get album metadata | both |
 | PATCH | /albums/:id | Update album (e.g. thumbnail) | photographer |
 | DELETE | /albums/:id | Delete album | photographer |
-| GET | /albums/:id/photos | Get photos, paginated (?page=&limit=) | both |
+| GET | /albums/:id/photos | Get photos in (added_at, id) order, cursor-paginated (?cursor=&limit=), optional ?status=ready; responds { data, nextCursor, total, processingCount } | both |
 | POST | /albums/:id/photos/batch | Bulk upload photos | photographer |
 | DELETE | /albums/:id/photos/batch | Bulk remove photos from album | photographer |
 | POST | /albums/:id/photos/:photoId | Add existing photo to album | photographer |

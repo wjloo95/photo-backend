@@ -20,6 +20,8 @@ import {
   getAlbumOwnersForPhoto,
   getAllPhotosForAlbum,
 } from '../../db/queries/photos';
+import cache from '../../cache';
+import { albumPhotosCacheKey } from '../../cache/keys';
 import { ExpiryJobName } from '../queues/expiryQueue';
 import { emailSender } from '../../email';
 import { albumExpiryWarning, WarningDays } from '../../email/templates/albumExpiryWarning';
@@ -116,7 +118,13 @@ export async function processExpiryJob(jobName: string): Promise<void> {
               const owners = await getAlbumOwnersForPhoto(photo.id);
 
               if (owners.length === 1) {
-                await cloudinary.uploader.destroy(photo.basePath);
+                // A photo that never finished uploading has base_path '' and
+                // nothing in Cloudinary. The SDK would send destroy('') to
+                // the API unchecked, and an error back would fail this photo,
+                // and so skip deleting its album, on every run forever.
+                if (photo.basePath !== '') {
+                  await cloudinary.uploader.destroy(photo.basePath);
+                }
                 await deletePhotoById(photo.id);
               }
             },
@@ -124,6 +132,15 @@ export async function processExpiryJob(jobName: string): Promise<void> {
           );
 
           await deleteAlbumById(album.id);
+
+          // Both caches would otherwise keep serving the deleted album:
+          // album:meta for up to 15 minutes, the photo list for up to 5.
+          // Photos in other albums too were left alone above, so no other
+          // album's list changed.
+          await Promise.all([
+            cache.del(`album:meta:${album.id}`),
+            cache.del(albumPhotosCacheKey(album.id)),
+          ]);
         },
         'albums',
       );

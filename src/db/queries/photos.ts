@@ -33,6 +33,22 @@ export function rehydratePhotoDates(photo: Photo): Photo {
   };
 }
 
+// A photo as listed in one album: the photo plus when it joined that album
+// (photo_albums.added_at, not the photo's upload time). It's the album
+// listing's sort key, so cursors over GET /albums/:id/photos are built from
+// it — and a cached list needs it rehydrated too, or a cursor issued on a
+// cache miss (a Date) and one compared on a hit (an ISO string) would disagree.
+export interface AlbumPhoto extends Photo {
+  addedAt: Date;
+}
+
+export function rehydrateAlbumPhotoDates(photo: AlbumPhoto): AlbumPhoto {
+  return {
+    ...rehydratePhotoDates(photo),
+    addedAt: new Date(photo.addedAt),
+  };
+}
+
 /**
  * Inserts `count` new `photos` rows for an album (one per uploaded file)
  * plus a matching `photo_albums` row for each, atomically.
@@ -102,18 +118,31 @@ export async function getPhotosForAlbum(
   return result.rows.map(toPhoto);
 }
 
-export async function getAllPhotosForAlbum(albumId: string): Promise<Photo[]> {
-  const result = await pool.query<PhotoRow>(
-    `SELECT p.*
+// Every photo in an album, in the album's one total order: oldest-added
+// first, then by id, since a batch upload gives all its photos the same
+// added_at. GET /albums/:id/photos pages through this list by cursor, so the
+// order has to be identical on every query.
+//
+// added_at is truncated to milliseconds for the sort because that is all a JS
+// Date can hold. Sorting on the full microseconds would let two photos added
+// in the same millisecond come back in an order the cursor comparison (on
+// Dates) can't see, and a page boundary between them could skip or repeat one.
+// A uuid sorts by its bytes, which is the same order as comparing the
+// lowercase strings pg returns, so the id tie-break matches in JS too.
+export async function getAllPhotosForAlbum(albumId: string): Promise<AlbumPhoto[]> {
+  const result = await pool.query<PhotoRow & { added_at: Date }>(
+    `SELECT p.*, pa.added_at
      FROM photos p
      JOIN photo_albums pa ON pa.photo_id = p.id
-     WHERE pa.album_id = $1`,
+     WHERE pa.album_id = $1
+     ORDER BY date_trunc('milliseconds', pa.added_at) ASC, p.id ASC`,
     [albumId],
   );
-  return result.rows.map(toPhoto);
+  return result.rows.map((row) => ({ ...toPhoto(row), addedAt: row.added_at }));
 }
 
 export interface PhotoAlbumOwnership {
+  albumId: string;
   photographerId: string;
   clientId: string | null;
 }
@@ -122,16 +151,23 @@ export interface PhotoAlbumOwnership {
 // photographer/client — used to authorize both direct photo access
 // (GET/DELETE /photos/:id) and "add existing photo to another album"
 // (a photographer may only link in photos they already have album access
-// to, not an arbitrary photo id).
+// to, not an arbitrary photo id). albumId is there for DELETE /photos/:id,
+// which must clear each of those albums' cached photo lists — and must read
+// them before the delete, since the photo_albums rows cascade away with it.
 export async function getAlbumOwnersForPhoto(photoId: string): Promise<PhotoAlbumOwnership[]> {
-  const result = await pool.query<{ photographer_id: string; client_id: string | null }>(
-    `SELECT a.photographer_id, a.client_id
+  const result = await pool.query<{
+    album_id: string;
+    photographer_id: string;
+    client_id: string | null;
+  }>(
+    `SELECT a.id AS album_id, a.photographer_id, a.client_id
      FROM photo_albums pa
      JOIN albums a ON a.id = pa.album_id
      WHERE pa.photo_id = $1`,
     [photoId],
   );
   return result.rows.map((row) => ({
+    albumId: row.album_id,
     photographerId: row.photographer_id,
     clientId: row.client_id,
   }));
@@ -182,5 +218,18 @@ export async function markPhotoReady(
     `UPDATE photos SET base_path = $2, width = $3, height = $4,
     status = 'ready' WHERE id = $1`,
     [photoId, basePath, width, height],
+  );
+}
+
+// After an upload job's final attempt, every photo of the batch that is still
+// processing is never going to finish. The status guard is what keeps this
+// safe to run over the whole batch: photos that did finish are 'ready' and
+// left untouched, even if one finished concurrently. base_path, width and
+// height stay empty, as they were.
+export async function markPhotosFailed(photoIds: string[]): Promise<void> {
+  await pool.query(
+    `UPDATE photos SET status = 'failed'
+     WHERE id = ANY($1::uuid[]) AND status = 'processing'`,
+    [photoIds],
   );
 }

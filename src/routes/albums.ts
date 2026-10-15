@@ -10,14 +10,15 @@ import {
   rehydrateAlbumDates,
 } from '../db/queries/albums';
 import { getClientByUserId } from '../db/queries/clients';
-import { Album, AlbumType, Photo, UserRole } from '../types';
+import { Album, AlbumType, Photo, PhotoStatus, UserRole } from '../types';
 import { requireRole } from '../middleware/requireRole';
 import { AppError } from '../types/AppError';
 import {
   insertPhotosForAlbum,
   getPhotoById,
   getAllPhotosForAlbum,
-  rehydratePhotoDates,
+  rehydrateAlbumPhotoDates,
+  AlbumPhoto,
   getAlbumOwnersForPhoto,
   addPhotoToAlbum,
   removePhotoFromAlbum,
@@ -26,7 +27,9 @@ import {
 import { photoQueue, PhotoJobName } from '../jobs/queues/photoQueue';
 import fs from 'node:fs/promises';
 import cache from '../cache';
+import { albumPhotosCacheKey } from '../cache/keys';
 import { parsePaginationParam } from '../utils/pagination';
+import { CursorPosition, decodeCursor, encodeCursor, isAfterCursor } from '../utils/cursor';
 
 const router = Router();
 
@@ -215,7 +218,7 @@ export const createAlbumPhotosBatch: RequestHandler = async (req, res, next) => 
       albumId: album.id,
     });
 
-    await cache.del(`album:photos:${album.id}`);
+    await cache.del(albumPhotosCacheKey(album.id));
 
     res.status(202).json(photos);
   } catch (err) {
@@ -224,12 +227,37 @@ export const createAlbumPhotosBatch: RequestHandler = async (req, res, next) => 
 };
 
 // GET /albums/:id/photos — both roles, same ownership rule as GET /albums/:id.
-// Paginated via ?page=&limit= (both optional) — offset = (page - 1) * limit.
-// limit is capped at MAX_PHOTOS_PAGE_SIZE so a caller can't request an
-// unbounded page in one request; see parsePaginationParam for the
-// fallback rules on missing/invalid params.
+//
+// Cursor-paginated: ?limit= (default 20, capped at 100, invalid falls back to
+// the default) and an optional ?cursor=, the nextCursor of the previous page.
+// No cursor means the first page. A malformed cursor is a 400 rather than a
+// fallback; see decodeCursor for why. Photos come in the album's (added_at,
+// id) order from getAllPhotosForAlbum, and a page is the first `limit` photos
+// strictly after the cursor's position, so removing or adding photos between
+// requests never makes a client's scroll skip or repeat one.
+//
+// ?status=ready keeps only ready photos in data, total and the cursor walk:
+// the client portal can't lay out a photo with null dimensions. Any other
+// value, including a repeated param, is treated as absent, the same way limit
+// falls back. The filter is an explicit parameter rather than inferred from
+// the caller's role, so one URL always gives one answer and the shared cache
+// entry can't leak a photographer's view to a client. processingCount is
+// always the album-wide count, so the client can show "N more on the way"
+// while paging ready photos only.
+//
+// Responds { data, nextCursor, total, processingCount }; nextCursor is null
+// on the last page.
 const DEFAULT_PHOTOS_PAGE_SIZE = 20;
 const MAX_PHOTOS_PAGE_SIZE = 100;
+
+// addedAt is the listing's internal sort key, not part of the response.
+function toPhotoResponse({ id, basePath, status, width, height, uploadedAt }: AlbumPhoto): Photo {
+  return { id, basePath, status, width, height, uploadedAt };
+}
+
+function photoPosition(photo: AlbumPhoto): CursorPosition {
+  return { at: photo.addedAt, id: photo.id };
+}
 
 export const getAlbumPhotos: RequestHandler = async (req, res, next) => {
   try {
@@ -259,30 +287,58 @@ export const getAlbumPhotos: RequestHandler = async (req, res, next) => {
       return next(new AppError('Forbidden', 403));
     }
 
-    // Cached as the FULL photo list under one key per album, not one key
-    // per (page, limit) — see the design note in MEMORY.md. Pagination is
-    // applied in application code below, against whatever came back from
-    // cache or DB, so a single cache.del('album:photos:{id}') on any photo
-    // add/remove invalidates every page at once.
-    const photosCacheKey = `album:photos:${req.params.id}`;
-    let allPhotos = await cache.get<Photo[]>(photosCacheKey);
-
-    if (allPhotos) {
-      allPhotos = allPhotos.map(rehydratePhotoDates);
-    } else {
-      allPhotos = await getAllPhotosForAlbum(album.id);
-      await cache.set(photosCacheKey, allPhotos, 300);
-    }
-
-    const page = parsePaginationParam(req.query.page, 1);
     const limit = parsePaginationParam(
       req.query.limit,
       DEFAULT_PHOTOS_PAGE_SIZE,
       MAX_PHOTOS_PAGE_SIZE,
     );
-    const offset = (page - 1) * limit;
+    let cursor: CursorPosition | null = null;
 
-    res.json(allPhotos.slice(offset, offset + limit));
+    if (req.query.cursor !== undefined) {
+      cursor = decodeCursor(req.query.cursor);
+
+      if (!cursor) {
+        return next(new AppError('Invalid cursor', 400));
+      }
+    }
+
+    // Cached as the FULL photo list under one key per album, not one key per
+    // page, filter or cursor (see "The opinionated call" in
+    // SYSTEM_DESIGN_STUDY.md). Filtering, counting and the cursor step all
+    // run below, in application code, on whatever came back from cache or
+    // DB, so a single cache.del(albumPhotosCacheKey(id)) on any photo change
+    // invalidates every page under every filter at once.
+    const photosCacheKey = albumPhotosCacheKey(req.params.id);
+    let allPhotos = await cache.get<AlbumPhoto[]>(photosCacheKey);
+
+    if (allPhotos) {
+      allPhotos = allPhotos.map(rehydrateAlbumPhotoDates);
+    } else {
+      allPhotos = await getAllPhotosForAlbum(album.id);
+      await cache.set(photosCacheKey, allPhotos, 300);
+    }
+
+    const processingCount = allPhotos.filter(
+      (photo) => photo.status === PhotoStatus.processing,
+    ).length;
+    const visiblePhotos =
+      req.query.status === PhotoStatus.ready
+        ? allPhotos.filter((photo) => photo.status === PhotoStatus.ready)
+        : allPhotos;
+
+    // -1 when nothing sorts after the cursor: the walk is already past the end.
+    const start = cursor
+      ? visiblePhotos.findIndex((photo) => isAfterCursor(photoPosition(photo), cursor))
+      : 0;
+    const page = start === -1 ? [] : visiblePhotos.slice(start, start + limit);
+    const hasMore = start !== -1 && start + limit < visiblePhotos.length;
+
+    res.json({
+      data: page.map(toPhotoResponse),
+      nextCursor: hasMore ? encodeCursor(photoPosition(page[page.length - 1])) : null,
+      total: visiblePhotos.length,
+      processingCount,
+    });
   } catch (err) {
     next(err);
   }
@@ -310,7 +366,7 @@ export const deleteAlbumPhotosBatch: RequestHandler = async (req, res, next) => 
 
     await deletePhotosFromAlbum(album.id, photoIds);
 
-    await cache.del(`album:photos:${req.params.id}`);
+    await cache.del(albumPhotosCacheKey(req.params.id));
 
     res.status(204).send();
   } catch (err) {
@@ -351,7 +407,7 @@ export const addAlbumPhoto: RequestHandler = async (req, res, next) => {
 
     await addPhotoToAlbum(album.id, photo.id);
 
-    await cache.del(`album:photos:${req.params.id}`);
+    await cache.del(albumPhotosCacheKey(req.params.id));
 
     res.status(201).json(photo);
   } catch (err) {
@@ -375,7 +431,7 @@ export const removeAlbumPhoto: RequestHandler = async (req, res, next) => {
 
     await removePhotoFromAlbum(album.id, req.params.photoId);
 
-    await cache.del(`album:photos:${req.params.id}`);
+    await cache.del(albumPhotosCacheKey(req.params.id));
 
     res.status(204).send();
   } catch (err) {

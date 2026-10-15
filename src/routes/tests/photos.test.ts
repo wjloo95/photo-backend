@@ -7,12 +7,19 @@ jest.mock('../../db/queries/photos', () => ({
   deletePhotoById: jest.fn(),
 }));
 
+jest.mock('../../cache', () => ({
+  __esModule: true,
+  default: { del: jest.fn() },
+}));
+
 import { getPhotoFromId as getPhotoFromIdHandler, deletePhotoFromId as deletePhotoFromIdHandler } from '../photos';
 import { getPhotoById, getAlbumOwnersForPhoto, deletePhotoById } from '../../db/queries/photos';
+import cache from '../../cache';
 
 const getPhotoByIdMock = getPhotoById as jest.Mock;
 const getAlbumOwnersForPhotoMock = getAlbumOwnersForPhoto as jest.Mock;
 const deletePhotoByIdMock = deletePhotoById as jest.Mock;
+const cacheDelMock = cache.del as jest.Mock;
 
 type Handler = (req: Request, res: Response, next: NextFunction) => Promise<void>;
 const getPhotoFromId = getPhotoFromIdHandler as unknown as Handler;
@@ -244,6 +251,44 @@ describe('deletePhotoFromId', () => {
     expect(deletePhotoByIdMock).toHaveBeenCalledWith('photo-1');
     expect(res.status).toHaveBeenCalledWith(204);
     expect(next).not.toHaveBeenCalled();
+  });
+
+  it('clears the cached photo list of every album that contained the photo, after deleting it', async () => {
+    getPhotoByIdMock.mockResolvedValue(photo);
+    getAlbumOwnersForPhotoMock.mockResolvedValue([
+      { albumId: 'album-1', photographerId: 'photog-1', clientId: 'client-1' },
+      { albumId: 'album-2', photographerId: 'photog-1', clientId: null },
+    ]);
+    deletePhotoByIdMock.mockResolvedValue(undefined);
+    cacheDelMock.mockResolvedValue(undefined);
+
+    const req = makeReq({ params: { id: 'photo-1' }, user: photographer });
+    const res = makeRes();
+    const next = jest.fn() as NextFunction;
+
+    await deletePhotoFromId(req, res, next);
+
+    expect(cacheDelMock).toHaveBeenCalledTimes(2);
+    expect(cacheDelMock).toHaveBeenCalledWith('album:photos:album-1');
+    expect(cacheDelMock).toHaveBeenCalledWith('album:photos:album-2');
+    expect(deletePhotoByIdMock.mock.invocationCallOrder[0]).toBeLessThan(
+      cacheDelMock.mock.invocationCallOrder[0],
+    );
+  });
+
+  it('clears no cache when the caller is not allowed to delete the photo', async () => {
+    getPhotoByIdMock.mockResolvedValue(photo);
+    getAlbumOwnersForPhotoMock.mockResolvedValue([
+      { albumId: 'album-1', photographerId: 'someone-else', clientId: null },
+    ]);
+
+    const req = makeReq({ params: { id: 'photo-1' }, user: photographer });
+    const res = makeRes();
+    const next = jest.fn() as NextFunction;
+
+    await deletePhotoFromId(req, res, next);
+
+    expect(cacheDelMock).not.toHaveBeenCalled();
   });
 
   it('forwards errors from the query layer to next(err)', async () => {
