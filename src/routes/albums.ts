@@ -26,6 +26,7 @@ import {
 import { photoQueue, PhotoJobName } from '../jobs/queues/photoQueue';
 import fs from 'node:fs/promises';
 import cache from '../cache';
+import { albumPhotosCacheKey } from '../cache/keys';
 import { parsePaginationParam } from '../utils/pagination';
 
 const router = Router();
@@ -215,7 +216,7 @@ export const createAlbumPhotosBatch: RequestHandler = async (req, res, next) => 
       albumId: album.id,
     });
 
-    await cache.del(`album:photos:${album.id}`);
+    await cache.del(albumPhotosCacheKey(album.id));
 
     res.status(202).json(photos);
   } catch (err) {
@@ -264,7 +265,7 @@ export const getAlbumPhotos: RequestHandler = async (req, res, next) => {
     // applied in application code below, against whatever came back from
     // cache or DB, so a single cache.del('album:photos:{id}') on any photo
     // add/remove invalidates every page at once.
-    const photosCacheKey = `album:photos:${req.params.id}`;
+    const photosCacheKey = albumPhotosCacheKey(req.params.id);
     let allPhotos = await cache.get<Photo[]>(photosCacheKey);
 
     if (allPhotos) {
@@ -310,7 +311,7 @@ export const deleteAlbumPhotosBatch: RequestHandler = async (req, res, next) => 
 
     await deletePhotosFromAlbum(album.id, photoIds);
 
-    await cache.del(`album:photos:${req.params.id}`);
+    await cache.del(albumPhotosCacheKey(req.params.id));
 
     res.status(204).send();
   } catch (err) {
@@ -351,7 +352,7 @@ export const addAlbumPhoto: RequestHandler = async (req, res, next) => {
 
     await addPhotoToAlbum(album.id, photo.id);
 
-    await cache.del(`album:photos:${req.params.id}`);
+    await cache.del(albumPhotosCacheKey(req.params.id));
 
     res.status(201).json(photo);
   } catch (err) {
@@ -375,7 +376,7 @@ export const removeAlbumPhoto: RequestHandler = async (req, res, next) => {
 
     await removePhotoFromAlbum(album.id, req.params.photoId);
 
-    await cache.del(`album:photos:${req.params.id}`);
+    await cache.del(albumPhotosCacheKey(req.params.id));
 
     res.status(204).send();
   } catch (err) {

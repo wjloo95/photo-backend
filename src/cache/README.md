@@ -77,3 +77,6 @@ conversations:{userId}        → conversation list for a user
 ```
 
 Define these as constants in your route files so they are easy to find and change.
+A key that is written or cleared from more than one file gets a builder in
+`keys.ts` instead (today: `albumPhotosCacheKey`, used by the album routes and
+the photo processor), so every caller spells it the same way.
