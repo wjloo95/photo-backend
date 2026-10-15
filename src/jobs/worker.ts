@@ -6,6 +6,9 @@
  * the process that actually drains BullMQ queues and does the work the API
  * only *enqueues*.
  */
+import * as dotenv from 'dotenv';
+dotenv.config(); // Must be first, as in server.ts — this process never runs server.ts
+
 import { Worker, Job } from 'bullmq';
 import { PHOTO_QUEUE_NAME, ProcessBatchJobData, PhotoJobName } from './queues/photoQueue';
 import { failRemainingPhotos, processPhotoBatch } from './processors/photoProcessor';
